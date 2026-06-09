@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Copy,
   Ellipsis,
+  FilePlus2,
   Mic,
   MoreHorizontal,
   Paperclip,
@@ -26,15 +27,19 @@ import { filterSupportedNovelFiles } from "./domain/importSource";
 import { createChapterSegments } from "./domain/segments";
 import {
   createInitialReaderState,
+  addImportedBooks,
   getActiveBook,
   getActiveChapter,
   selectBook,
   selectChapter,
   stepChapter,
 } from "./domain/readerState";
+import { createBrowserBossKeyAction } from "./domain/browserBossKey";
 import type { ApiProvider, NovelSource, ReaderSettings, SkinId } from "./domain/types";
-import { sampleBooks } from "./data/sampleLibrary";
 import { loadPersistedLibrary, persistLibrary, savePlatformSettings } from "./storage/libraryDb";
+import { createLocalWebStorageAdapter, fetchLocalWebPendingImports } from "./storage/storageAdapter";
+import { getCurrentRuntime } from "./runtime/runtimeAdapter";
+import { createLayoutStyleVars } from "./ui/skinLayoutTokens";
 import { skinSpecs } from "./ui/skinSpecs";
 
 const providerLabels: Record<ApiProvider, string> = {
@@ -47,17 +52,24 @@ const providerLabels: Record<ApiProvider, string> = {
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
-  const [reader, setReader] = useState(() => createInitialReaderState(sampleBooks));
+  const [reader, setReader] = useState(() => createInitialReaderState([]));
   const [chapterMenuBookId, setChapterMenuBookId] = useState<string | null>(reader.activeBookId);
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessionKeys, setSessionKeys] = useState<Partial<Record<ApiProvider, string>>>({});
   const [draft, setDraft] = useState("");
   const [draggingImport, setDraggingImport] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
 
   const activeBook = getActiveBook(reader);
   const activeChapter = getActiveChapter(reader);
   const spec = skinSpecs[reader.settings.skin];
+  const runtime = useMemo(() => getCurrentRuntime(), []);
+  const localWebStorage = useMemo(() => (runtime === "local-web" ? createLocalWebStorageAdapter() : null), [runtime]);
+  const layoutStyle = useMemo(
+    () => createLayoutStyleVars(reader.settings.skin, reader.settings.display),
+    [reader.settings.display, reader.settings.skin],
+  );
 
   const segments = useMemo(() => {
     if (!activeBook || !activeChapter) return [];
@@ -75,7 +87,7 @@ export default function App() {
     const importedBooks = await buildImportedBooks(files);
     if (importedBooks.length === 0) return;
 
-    setReader((current) => createInitialReaderState([...importedBooks, ...current.books]));
+    setReader((current) => addImportedBooks(current, importedBooks));
     setChapterMenuBookId(importedBooks[importedBooks.length - 1].id);
   }, []);
 
@@ -91,8 +103,24 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadPersistedLibrary()
-      .then(({ books, meta }) => {
+
+    async function loadLibrary() {
+      try {
+        if (localWebStorage) {
+          const snapshot = await localWebStorage.load();
+          if (cancelled || !snapshot) return;
+          setReader({
+            books: snapshot.books,
+            activeBookId: snapshot.meta.activeBookId,
+            activeChapterIndex: snapshot.meta.activeChapterIndex,
+            chapterReadOffset: snapshot.meta.chapterReadOffset,
+            settings: snapshot.meta.settings,
+          });
+          setChapterMenuBookId(snapshot.meta.activeBookId);
+          return;
+        }
+
+        const { books, meta } = await loadPersistedLibrary();
         if (cancelled || books.length === 0 || !meta) return;
         setReader({
           books,
@@ -102,34 +130,80 @@ export default function App() {
           settings: meta.settings,
         });
         setChapterMenuBookId(meta.activeBookId);
-      })
-      .catch(() => {
+      } catch {
         // Local persistence should never block the reading surface.
-      });
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    }
+
+    loadLibrary().catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [localWebStorage]);
 
   useEffect(() => {
+    if (runtime === "local-web") return undefined;
     return window.novelChatDesktop?.onOpenFiles((desktopFiles) => {
       importFiles(desktopFiles.map(createFileFromDesktopImport)).catch(() => undefined);
     });
-  }, [importFiles]);
+  }, [importFiles, runtime]);
 
   useEffect(() => {
-    persistLibrary(
-      {
-        id: "reader",
-        activeBookId: reader.activeBookId,
-        activeChapterIndex: reader.activeChapterIndex,
-        chapterReadOffset: reader.chapterReadOffset,
-        settings: reader.settings,
-      },
-      reader.books,
-    ).catch(() => undefined);
+    if (!hydrated || runtime !== "local-web") return undefined;
+
+    let disposed = false;
+    const pullPendingImports = async () => {
+      const imports = await fetchLocalWebPendingImports();
+      if (disposed || imports.length === 0) return;
+      await importFiles(imports.map(createFileFromDesktopImport));
+    };
+
+    pullPendingImports().catch(() => undefined);
+    const timer = window.setInterval(() => {
+      pullPendingImports().catch(() => undefined);
+    }, 1800);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [hydrated, importFiles, runtime]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    const meta = {
+      activeBookId: reader.activeBookId,
+      activeChapterIndex: reader.activeChapterIndex,
+      chapterReadOffset: reader.chapterReadOffset,
+      settings: reader.settings,
+    };
+
+    if (localWebStorage) {
+      localWebStorage.persist({ books: reader.books, meta }).catch(() => undefined);
+      return;
+    }
+
+    persistLibrary({ id: "reader", ...meta }, reader.books).catch(() => undefined);
     savePlatformSettings(reader.settings).catch(() => undefined);
-  }, [reader]);
+  }, [hydrated, localWebStorage, reader]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.key.toLowerCase() !== "b") return;
+      event.preventDefault();
+      const action = createBrowserBossKeyAction({
+        target: reader.settings.bossKeyTarget,
+        companionAvailable: false,
+      });
+      window.location.href = action.type === "companion" ? action.fallbackUrl : action.url;
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [reader.settings.bossKeyTarget]);
 
   function updateSettings(patch: Partial<ReaderSettings>) {
     setReader((current) => ({ ...current, settings: { ...current.settings, ...patch } }));
@@ -148,6 +222,7 @@ export default function App() {
   return (
     <div
       className={`app skin-${reader.settings.skin}`}
+      style={layoutStyle}
       onDragEnter={(event) => {
         if (!hasFileDrag(event.dataTransfer)) return;
         event.preventDefault();
@@ -196,9 +271,11 @@ export default function App() {
           updateSettings={updateSettings}
         />
         <section className="message-stream" aria-label="conversation">
-          {segments.map((segment) => (
-            <Message key={segment.id} segment={segment} />
-          ))}
+          {activeBook ? (
+            segments.map((segment) => <Message key={segment.id} segment={segment} />)
+          ) : (
+            <EmptyImportState onImport={() => openImportPicker().catch(() => undefined)} />
+          )}
         </section>
         <Composer
           activeChapterTitle={activeChapter?.title ?? "正文"}
@@ -244,6 +321,17 @@ export default function App() {
         }}
         multiple
       />
+    </div>
+  );
+}
+
+function EmptyImportState(props: { onImport(): void }) {
+  return (
+    <div className="empty-import-state">
+      <button onClick={props.onImport}>
+        <FilePlus2 size={21} />
+        <span>导入 TXT / EPUB</span>
+      </button>
     </div>
   );
 }
@@ -503,6 +591,10 @@ function SettingsPanel(props: {
   settings: ReaderSettings;
   updateSettings(patch: Partial<ReaderSettings>): void;
 }) {
+  function updateDisplay(patch: Partial<ReaderSettings["display"]>) {
+    props.updateSettings({ display: { ...props.settings.display, ...patch } });
+  }
+
   return (
     <div className="settings-backdrop">
       <section className="settings-panel" aria-label="settings">
@@ -536,6 +628,53 @@ function SettingsPanel(props: {
             onChange={(event) => props.updateSettings({ interruptionEvery: Number(event.target.value) })}
           />
         </label>
+        <div className="settings-group">
+          <span>高级显示</span>
+          <label>
+            字号
+            <input
+              type="range"
+              min="0.9"
+              max="1.2"
+              step="0.05"
+              value={props.settings.display.fontScale}
+              onChange={(event) => updateDisplay({ fontScale: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            消息宽度
+            <input
+              type="number"
+              min="620"
+              max="980"
+              value={props.settings.display.messageWidth}
+              onChange={(event) => updateDisplay({ messageWidth: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            密度
+            <select
+              value={props.settings.display.density}
+              onChange={(event) => updateDisplay({ density: event.target.value as ReaderSettings["display"]["density"] })}
+            >
+              <option value="compact">紧凑</option>
+              <option value="comfortable">标准</option>
+              <option value="spacious">宽松</option>
+            </select>
+          </label>
+          <label>
+            侧边栏
+            <select
+              value={props.settings.display.sidebarMode}
+              onChange={(event) =>
+                updateDisplay({ sidebarMode: event.target.value as ReaderSettings["display"]["sidebarMode"] })
+              }
+            >
+              <option value="full">完整</option>
+              <option value="compact">窄栏</option>
+            </select>
+          </label>
+        </div>
         <div className="settings-group">
           <span>会话密钥</span>
           {(["openai", "gemini", "deepseek", "doubao"] as ApiProvider[]).map((provider) => (

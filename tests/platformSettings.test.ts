@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { defaultDisplaySettings } from "../src/domain/types";
 import { toPlatformSettingsPayload } from "../src/storage/persistence";
 
 describe("platform settings payload", () => {
@@ -20,6 +21,7 @@ describe("platform settings payload", () => {
       minChunkChars: 240,
       maxChunkChars: 720,
       interruptionEvery: 3,
+      display: defaultDisplaySettings,
     });
     expect("sessionKeys" in payload).toBe(false);
   });

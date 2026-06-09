@@ -51,7 +51,7 @@ function chunkText(
   maxChars: number,
   random: () => number,
 ): string[] {
-  const normalized = text.replace(/\s+/g, "");
+  const normalized = text.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   const chunks: string[] = [];
   let cursor = 0;
   const min = Math.max(8, Math.min(minChars, maxChars));

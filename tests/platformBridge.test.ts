@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { defaultDisplaySettings } from "../src/domain/types";
 import { savePlatformSettings } from "../src/storage/platformBridge";
 
 const settings = {
@@ -18,6 +19,7 @@ const persistedSettings = {
   minChunkChars: 200,
   maxChunkChars: 600,
   interruptionEvery: 4,
+  display: defaultDisplaySettings,
 };
 
 describe("savePlatformSettings", () => {

@@ -25,4 +25,17 @@ describe("createChapterSegments", () => {
     expect(segments.filter((segment) => segment.role === "assistant").length).toBeGreaterThan(1);
     expect(segments.map((segment) => segment.text).join("")).toContain("克莱恩抬起手");
   });
+
+  it("preserves spaces in prose chunks", () => {
+    const segments = createChapterSegments({
+      chapterTitle: "Chapter 1",
+      text: "Words keep their spaces when chunked.",
+      seed: "spaces",
+      minChars: 100,
+      maxChars: 120,
+      interruptionEvery: 0,
+    });
+
+    expect(segments.find((segment) => segment.kind === "prose")?.text).toBe("Words keep their spaces when chunked.");
+  });
 });

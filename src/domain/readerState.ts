@@ -1,4 +1,4 @@
-import type { NovelSource, ReaderSettings, ReaderState } from "./types";
+import { defaultDisplaySettings, type NovelSource, type ReaderSettings, type ReaderState } from "./types";
 
 export const defaultSettings: ReaderSettings = {
   skin: "chatgpt",
@@ -7,6 +7,7 @@ export const defaultSettings: ReaderSettings = {
   minChunkChars: 180,
   maxChunkChars: 350,
   interruptionEvery: 2,
+  display: defaultDisplaySettings,
 };
 
 export function createInitialReaderState(books: NovelSource[]): ReaderState {
@@ -38,6 +39,18 @@ export function selectBook(state: ReaderState, bookId: string): ReaderState {
     books: sortBooksByRecent(
       state.books.map((book) => (book.id === bookId ? { ...book, updatedAt: Date.now() } : book)),
     ),
+  };
+}
+
+export function addImportedBooks(state: ReaderState, importedBooks: NovelSource[]): ReaderState {
+  if (importedBooks.length === 0) return state;
+  const books = sortBooksByRecent([...importedBooks, ...state.books]);
+  return {
+    ...state,
+    books,
+    activeBookId: books[0]?.id ?? null,
+    activeChapterIndex: 0,
+    chapterReadOffset: 0,
   };
 }
 

@@ -1,26 +1,52 @@
 import { chromium } from "playwright";
 import { createReadStream } from "node:fs";
-import { stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
 
 const root = process.cwd();
 const distDir = path.join(root, "dist");
 const outputDir = path.join(root, "tmp");
-const screenshotPath = path.join(outputDir, "novelchat-smoke.png");
 const pickerImportPath = path.join(outputDir, "smoke-picker-import.txt");
 const dragImportName = "smoke-drag-import.txt";
 
-await mkdir(outputDir, { recursive: true });
-await writeFile(pickerImportPath, "第一章 导入\n从文件选择导入。", "utf8");
-const server = await createStaticServer(distDir);
+const viewports = [
+  ["desktop", { width: 1920, height: 1080 }],
+  ["laptop", { width: 1366, height: 768 }],
+  ["compact", { width: 900, height: 700 }],
+  ["mobile", { width: 390, height: 844 }],
+];
 
+await mkdir(outputDir, { recursive: true });
+await writeFile(
+  pickerImportPath,
+  [
+    "Chapter 1 Imported from picker",
+    "The picker import should appear in the sidebar.",
+    "",
+    "Chapter 2 Continue",
+    "The second chapter is used by the chapter switcher smoke test.",
+  ].join("\n"),
+  "utf8",
+);
+
+const server = await createStaticServer(distDir);
 const browser = await launchBrowser();
-const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+const page = await browser.newPage({ viewport: viewports[0][1] });
+const consoleErrors = [];
+page.on("console", (message) => {
+  if (message.type() === "error") {
+    consoleErrors.push(message.text());
+  }
+});
+page.on("pageerror", (error) => {
+  consoleErrors.push(error.message);
+});
 
 await page.goto(server.url);
 await page.getByText("ChatGPT", { exact: false }).first().waitFor({ timeout: 10000 });
+await page.locator(".empty-import-state").waitFor({ timeout: 10000 });
+
 const fileChooserPromise = page.waitForEvent("filechooser");
 await page.getByLabel("import novel").first().click();
 const fileChooser = await fileChooserPromise;
@@ -29,7 +55,21 @@ await page.getByRole("button", { name: "smoke-picker-import", exact: true }).wai
 
 const dataTransfer = await page.evaluateHandle(({ name }) => {
   const transfer = new DataTransfer();
-  transfer.items.add(new File(["第一章 拖入\n从拖拽导入。"], name, { type: "text/plain" }));
+  transfer.items.add(
+    new File(
+      [
+        [
+          "Chapter 1 Drag import",
+          "The drag import should become a recent sidebar item.",
+          "",
+          "Chapter 2 Next drag chapter",
+          "The composer arrow should switch to this chapter.",
+        ].join("\n"),
+      ],
+      name,
+      { type: "text/plain" },
+    ),
+  );
   return transfer;
 }, { name: dragImportName });
 await page.dispatchEvent(".app", "dragenter", { dataTransfer });
@@ -37,25 +77,44 @@ await page.locator(".drop-overlay").waitFor();
 await page.dispatchEvent(".app", "drop", { dataTransfer });
 await page.getByRole("button", { name: "smoke-drag-import", exact: true }).waitFor();
 
-await page.getByRole("button", { name: "WCCI 2026 准备事项", exact: true }).click();
+await page.getByRole("button", { name: "smoke-drag-import", exact: true }).click();
 if ((await page.locator(".chapter-menu").count()) === 0) {
   await page.locator(".book-row-wrap").first().hover();
   await page.locator(".book-menu-button").first().click({ force: true });
 }
 await page.locator(".chapter-menu").waitFor();
-await page.locator(".chapter-list button").nth(1).click();
+await page.locator(".chapter-list button").first().click();
 await page.locator(".chapter-pill").getByLabel("next chapter").click();
-await page.getByLabel("more").click();
-await page.locator(".skin-switcher").getByRole("button", { name: "Gemini" }).click();
-await page.getByLabel("more").click();
-await page.locator(".skin-switcher").getByRole("button", { name: "deepseek" }).click();
-await page.getByLabel("more").click();
-await page.locator(".skin-switcher").getByRole("button", { name: "豆包" }).click();
-await page.screenshot({ path: screenshotPath, fullPage: true });
+
+await switchSkin(page, "Gemini");
+await switchSkin(page, "deepseek");
+await switchSkinByIndex(page, 3);
+
+for (const [name, viewport] of viewports) {
+  await page.setViewportSize(viewport);
+  await page.locator(".app").waitFor();
+  await page.screenshot({ path: path.join(outputDir, `novelchat-smoke-${name}.png`), fullPage: true });
+}
+await page.screenshot({ path: path.join(outputDir, "novelchat-smoke.png"), fullPage: true });
 
 await browser.close();
 await server.close();
-console.log(`Visual smoke passed. Screenshot: ${screenshotPath}`);
+
+if (consoleErrors.length > 0) {
+  throw new Error(`Visual smoke saw browser errors:\n${consoleErrors.join("\n")}`);
+}
+
+console.log(`Visual smoke passed. Screenshots: ${path.join(outputDir, "novelchat-smoke-*.png")}`);
+
+async function switchSkin(page, label) {
+  await page.getByLabel("more").click();
+  await page.locator(".skin-switcher").getByRole("button", { name: label }).click();
+}
+
+async function switchSkinByIndex(page, index) {
+  await page.getByLabel("more").click();
+  await page.locator(".skin-switcher button").nth(index).click();
+}
 
 async function launchBrowser() {
   const attempts = [
@@ -78,6 +137,11 @@ async function launchBrowser() {
 async function createStaticServer(rootDir) {
   const server = http.createServer(async (request, response) => {
     const rawPath = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (rawPath === "/favicon.ico") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
     const safePath = rawPath === "/" ? "/index.html" : rawPath;
     const filePath = path.join(rootDir, decodeURIComponent(safePath));
     if (!filePath.startsWith(rootDir)) {

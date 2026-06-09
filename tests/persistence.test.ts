@@ -10,6 +10,13 @@ describe("toPersistedSettings", () => {
       minChunkChars: 180,
       maxChunkChars: 350,
       interruptionEvery: 2,
+      display: {
+        fontScale: 1.05,
+        messageWidth: 820,
+        density: "comfortable",
+        sidebarMode: "full",
+        composerPosition: "bottom",
+      },
       sessionKeys: { deepseek: "secret" },
     });
 
@@ -20,6 +27,13 @@ describe("toPersistedSettings", () => {
       minChunkChars: 180,
       maxChunkChars: 350,
       interruptionEvery: 2,
+      display: {
+        fontScale: 1.05,
+        messageWidth: 820,
+        density: "comfortable",
+        sidebarMode: "full",
+        composerPosition: "bottom",
+      },
     });
     expect(JSON.stringify(settings)).not.toContain("secret");
   });

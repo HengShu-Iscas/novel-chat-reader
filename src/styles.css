@@ -41,8 +41,21 @@ button {
   --bubble: #f4f4f4;
   --accent: #111;
   --input-shadow: 0 18px 50px rgba(0, 0, 0, 0.11);
+  --sidebar-width: 360px;
+  --compact-sidebar-width: 86px;
+  --topbar-height: 58px;
+  --message-width: 760px;
+  --composer-width: 900px;
+  --content-inset: 96px;
+  --assistant-font-size: 19px;
+  --assistant-font-size-scaled: 19px;
+  --user-font-size: 18px;
+  --user-font-size-scaled: 18px;
+  --line-height: 1.68;
+  --font-scale: 1;
+  --density-gap: 34px;
   display: grid;
-  grid-template-columns: 324px 1fr;
+  grid-template-columns: var(--sidebar-width) 1fr;
   height: 100vh;
   background: var(--main-bg);
   color: var(--text);
@@ -52,7 +65,6 @@ button {
   --selected: #eee;
   --accent: #3c78ff;
   --bubble: #f1f1f1;
-  grid-template-columns: 332px 1fr;
 }
 
 .skin-deepseek {
@@ -60,7 +72,6 @@ button {
   --selected: #eaf1ff;
   --accent: #5b72ff;
   --bubble: #edf3ff;
-  grid-template-columns: 320px 1fr;
 }
 
 .skin-doubao {
@@ -68,7 +79,6 @@ button {
   --selected: #fff;
   --bubble: #f5f5f5;
   --accent: #202124;
-  grid-template-columns: 328px 1fr;
 }
 
 .sidebar {
@@ -369,7 +379,7 @@ button {
 .chat-main {
   position: relative;
   display: grid;
-  grid-template-rows: 58px 1fr auto;
+  grid-template-rows: var(--topbar-height) 1fr auto;
   min-width: 0;
   height: 100vh;
   overflow: hidden;
@@ -380,7 +390,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 58px;
+  min-height: var(--topbar-height);
   padding: 0 24px;
   border-bottom: 1px solid transparent;
 }
@@ -465,14 +475,14 @@ button {
 .message-stream {
   display: flex;
   flex-direction: column;
-  gap: 34px;
+  gap: var(--density-gap);
   overflow-y: auto;
-  padding: 40px min(8vw, 116px) 145px;
+  padding: 36px min(8vw, var(--content-inset)) 145px;
 }
 
 .message {
   display: flex;
-  width: min(900px, 100%);
+  width: min(calc(var(--message-width) + 180px), 100%);
 }
 
 .assistant-message {
@@ -486,31 +496,31 @@ button {
 }
 
 .assistant-content {
-  width: min(760px, 100%);
+  width: min(var(--message-width), 100%);
   min-width: 0;
 }
 
 .assistant-content p {
-  max-width: 760px;
+  max-width: var(--message-width);
   margin: 0;
   color: #1d1d1d;
-  font-size: 20px;
-  line-height: 1.72;
+  font-size: var(--assistant-font-size-scaled);
+  line-height: var(--line-height);
   white-space: pre-wrap;
 }
 
 .skin-deepseek .assistant-content p,
 .skin-gemini .assistant-content p,
 .skin-doubao .assistant-content p {
-  font-size: 21px;
+  font-size: var(--assistant-font-size-scaled);
 }
 
 .user-bubble {
-  max-width: 520px;
+  max-width: min(560px, calc(var(--message-width) * 0.72));
   padding: 14px 20px;
   border-radius: 24px;
   background: var(--bubble);
-  font-size: 20px;
+  font-size: var(--user-font-size-scaled);
   line-height: 1.5;
 }
 
@@ -524,6 +534,32 @@ button {
   gap: 15px;
   margin-top: 10px;
   color: #6c6c6c;
+}
+
+.empty-import-state {
+  display: grid;
+  width: min(900px, 100%);
+  min-height: 52vh;
+  place-items: center;
+  align-self: center;
+}
+
+.empty-import-state button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 0 18px;
+  border: 1px solid #e5e5e5;
+  border-radius: 999px;
+  background: #fff;
+  color: #333;
+  font-size: 16px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.06);
+}
+
+.empty-import-state button:hover {
+  background: var(--hover);
 }
 
 .composer-shell {
@@ -578,7 +614,7 @@ button {
 }
 
 .composer-box {
-  width: min(980px, 100%);
+  width: min(var(--composer-width), 100%);
   min-height: 92px;
   padding: 14px 16px 10px;
   border: 1px solid #e5e5e5;
@@ -702,6 +738,14 @@ button {
   padding: 0 10px;
 }
 
+.settings-panel select {
+  min-height: 38px;
+  border: 1px solid #dedede;
+  border-radius: 10px;
+  padding: 0 10px;
+  background: #fff;
+}
+
 .settings-group {
   display: grid;
   gap: 4px;
@@ -749,7 +793,7 @@ button {
 
 @media (max-width: 900px) {
   .app {
-    grid-template-columns: 88px 1fr;
+    grid-template-columns: var(--compact-sidebar-width) 1fr;
   }
 
   .brand-text,
@@ -775,5 +819,29 @@ button {
   .composer-shell {
     left: 24px;
     right: 24px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .message-stream {
+    padding-inline: 16px;
+  }
+
+  .composer-shell {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .composer-box {
+    border-radius: 20px;
   }
 }

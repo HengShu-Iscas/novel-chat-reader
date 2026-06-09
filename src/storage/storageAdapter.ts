@@ -1,0 +1,104 @@
+import type { NovelSource, ReaderSettings } from "../domain/types";
+import type { DesktopImportFile } from "../domain/desktopImport";
+import { toPersistedSettings } from "./persistence";
+import type { SettingsDraft } from "./persistence";
+
+export type ReaderLibraryMeta = {
+  activeBookId: string | null;
+  activeChapterIndex: number;
+  chapterReadOffset: number;
+};
+
+export type ReaderSnapshot = {
+  books: NovelSource[];
+  meta: ReaderLibraryMeta & {
+    settings: ReaderSettings;
+  };
+};
+
+export type PersistableReaderSnapshot = {
+  books: NovelSource[];
+  meta: ReaderLibraryMeta & {
+    settings: ReaderSettings | SettingsDraft;
+  };
+};
+
+export type StorageAdapter = {
+  load(): Promise<ReaderSnapshot | null>;
+  persist(snapshot: PersistableReaderSnapshot): Promise<void>;
+};
+
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+
+export function createLocalWebStorageAdapter(
+  fetchImpl: FetchLike = fetch,
+): StorageAdapter {
+  return {
+    async load() {
+      const [libraryResponse, settingsResponse] = await Promise.all([
+        fetchImpl("/api/library"),
+        fetchImpl("/api/settings"),
+      ]);
+
+      if (!libraryResponse.ok || !settingsResponse.ok) {
+        throw new Error("Local NovelChat service returned an error while loading state");
+      }
+
+      const library = (await libraryResponse.json()) as {
+        books: NovelSource[];
+        meta: ReaderLibraryMeta;
+      };
+      const settingsBody = (await settingsResponse.json()) as { settings?: SettingsDraft } | SettingsDraft;
+      const settingsDraft = isWrappedSettings(settingsBody) ? settingsBody.settings : settingsBody;
+      if (!settingsDraft) {
+        throw new Error("Local NovelChat service returned settings without a settings payload");
+      }
+      const settings = toPersistedSettings(settingsDraft);
+
+      return {
+        books: library.books,
+        meta: { ...library.meta, settings },
+      };
+    },
+    async persist(snapshot) {
+      const settings = toPersistedSettings(snapshot.meta.settings);
+      const libraryBody = JSON.stringify({
+        books: snapshot.books,
+        meta: {
+          activeBookId: snapshot.meta.activeBookId,
+          activeChapterIndex: snapshot.meta.activeChapterIndex,
+          chapterReadOffset: snapshot.meta.chapterReadOffset,
+        },
+      });
+
+      await Promise.all([
+        fetchImpl("/api/library", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: libraryBody,
+        }),
+        fetchImpl("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(settings),
+        }),
+      ]);
+    },
+  };
+}
+
+function isWrappedSettings(value: { settings?: SettingsDraft } | SettingsDraft): value is { settings?: SettingsDraft } {
+  return "settings" in value;
+}
+
+export async function fetchLocalWebPendingImports(fetchImpl: FetchLike = fetch): Promise<DesktopImportFile[]> {
+  const response = await fetchImpl("/api/imports/pending");
+  if (!response.ok) {
+    throw new Error("Local NovelChat service returned an error while loading pending imports");
+  }
+  const body = (await response.json()) as { files?: Array<{ name: string; bytes: number[] }> };
+  return (body.files ?? []).map((file) => ({
+    name: file.name,
+    bytes: new Uint8Array(file.bytes),
+  }));
+}

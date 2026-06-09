@@ -1,6 +1,7 @@
-import type { ApiProvider, ReaderSettings } from "../domain/types";
+import { defaultDisplaySettings, type ApiProvider, type ReaderSettings } from "../domain/types";
 
-export type SettingsDraft = ReaderSettings & {
+export type SettingsDraft = Omit<ReaderSettings, "display"> & {
+  display?: ReaderSettings["display"];
   sessionKeys?: Partial<Record<ApiProvider, string>>;
 };
 
@@ -12,6 +13,7 @@ export function toPersistedSettings(settings: SettingsDraft): ReaderSettings {
     minChunkChars: settings.minChunkChars,
     maxChunkChars: settings.maxChunkChars,
     interruptionEvery: settings.interruptionEvery,
+    display: settings.display ?? defaultDisplaySettings,
   };
 }
 
