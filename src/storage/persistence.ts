@@ -14,3 +14,7 @@ export function toPersistedSettings(settings: SettingsDraft): ReaderSettings {
     interruptionEvery: settings.interruptionEvery,
   };
 }
+
+export function toPlatformSettingsPayload(settings: SettingsDraft): ReaderSettings {
+  return toPersistedSettings(settings);
+}

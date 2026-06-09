@@ -33,7 +33,7 @@ import {
 } from "./domain/readerState";
 import type { ApiProvider, NovelSource, ReaderSettings, SkinId } from "./domain/types";
 import { sampleBooks } from "./data/sampleLibrary";
-import { loadPersistedLibrary, persistLibrary, saveExtensionSettings } from "./storage/libraryDb";
+import { loadPersistedLibrary, persistLibrary, savePlatformSettings } from "./storage/libraryDb";
 import { skinSpecs } from "./ui/skinSpecs";
 
 const providerLabels: Record<ApiProvider, string> = {
@@ -101,7 +101,7 @@ export default function App() {
       },
       reader.books,
     ).catch(() => undefined);
-    saveExtensionSettings(reader.settings).catch(() => undefined);
+    savePlatformSettings(reader.settings).catch(() => undefined);
   }, [reader]);
 
   function updateSettings(patch: Partial<ReaderSettings>) {

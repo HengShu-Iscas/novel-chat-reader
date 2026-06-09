@@ -2,7 +2,17 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
-const ignoredDirs = new Set([".git", "node_modules", "dist", "tmp", "coverage", "playwright-report", "test-results"]);
+const ignoredDirs = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "dist-electron",
+  "release",
+  "tmp",
+  "coverage",
+  "playwright-report",
+  "test-results",
+]);
 const blockedExtensions = new Set([".epub", ".pem", ".key", ".p12", ".pfx", ".crt"]);
 const suspiciousPatterns = [
   /sk-[A-Za-z0-9_-]{20,}/,

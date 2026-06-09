@@ -1,6 +1,6 @@
 # NovelChat Reader
 
-NovelChat Reader is a Chrome/Edge Manifest V3 extension that presents local TXT/EPUB reading sessions as AI-chat-style conversations.
+NovelChat Reader is a Chrome/Edge Manifest V3 extension and Windows desktop app that presents local TXT/EPUB reading sessions as AI-chat-style conversations.
 
 It is an experimental, non-commercial open-source project. It is not affiliated with OpenAI, Google, DeepSeek, ByteDance, Doubao, or any other model provider.
 
@@ -14,7 +14,25 @@ It is an experimental, non-commercial open-source project. It is not affiliated 
 - Split novel text into assistant messages with random short user interruptions.
 - Optional API polish adapters for OpenAI, Gemini, DeepSeek, and Doubao/Volcengine Ark.
 - API keys are session-only and are not persisted to IndexedDB or extension local storage.
-- `Alt+B` boss key switches to the selected public chat site.
+- `Alt+B` boss key switches to the selected public chat site in the extension, and hides the desktop app while opening the selected public chat site in the default browser.
+
+## Windows Desktop EXE
+
+Regular users can run either generated file from `release/`:
+
+- `NovelChat Reader-0.1.0-win-x64.exe`: Windows installer.
+- `NovelChat Reader-0.1.0-win-x64-portable.exe`: portable app, no installation required.
+
+The desktop app keeps the same local IndexedDB library model as the extension build. Imported books and progress stay local to the current Windows user profile.
+
+To build the Windows desktop release:
+
+```powershell
+npm.cmd install
+npm.cmd run dist:win
+```
+
+`dist:win` builds the web UI, bundles the Electron main/preload scripts, and writes installer artifacts to `release/`. The packaging script sets Electron download mirrors by default for more reliable Windows builds; set `ELECTRON_MIRROR` or `ELECTRON_BUILDER_BINARIES_MIRROR` before running the command if you prefer a different mirror.
 
 ## Development
 
@@ -28,6 +46,12 @@ To preview during development:
 
 ```powershell
 npm.cmd run dev
+```
+
+To preview the desktop app during development:
+
+```powershell
+npm.cmd run desktop:dev
 ```
 
 To load the extension:

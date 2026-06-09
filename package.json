@@ -3,10 +3,15 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
+  "main": "dist-electron/main.cjs",
+  "author": "HengShu-Iscas",
   "description": "A Chrome/Edge MV3 extension that presents TXT/EPUB novels as AI-chat-style reading sessions.",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "desktop:dev": "node scripts/desktop-dev.mjs",
+    "desktop:build": "npm run build && node scripts/build-electron.mjs",
+    "dist:win": "node scripts/package-win.mjs",
     "test": "vitest run",
     "test:e2e": "node scripts/visual-smoke.mjs",
     "visual:smoke": "node scripts/visual-smoke.mjs",
@@ -24,9 +29,53 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "electron": "^42.3.3",
+    "electron-builder": "^26.15.2",
+    "esbuild": "^0.28.0",
     "playwright": "^1.60.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "vitest": "^4.1.8"
+  },
+  "build": {
+    "appId": "io.github.hengshu.iscas.novelchatreader",
+    "productName": "NovelChat Reader",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json",
+      "LICENSE",
+      "NOTICE.md"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-win-${arch}-portable.${ext}"
+    }
   }
 }

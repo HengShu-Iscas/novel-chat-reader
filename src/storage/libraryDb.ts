@@ -38,7 +38,4 @@ export async function persistLibrary(meta: ReaderMeta, books: NovelSource[]): Pr
   });
 }
 
-export async function saveExtensionSettings(settings: ReaderSettings): Promise<void> {
-  if (typeof chrome === "undefined" || !chrome.storage?.local) return;
-  await chrome.storage.local.set({ novelChatSettings: toPersistedSettings(settings) });
-}
+export { savePlatformSettings } from "./platformBridge";
