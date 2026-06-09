@@ -1,0 +1,71 @@
+import type { NovelSource, ReaderSettings, ReaderState } from "./types";
+
+export const defaultSettings: ReaderSettings = {
+  skin: "chatgpt",
+  bossKeyTarget: "chatgpt",
+  apiPolishEnabled: false,
+  minChunkChars: 180,
+  maxChunkChars: 350,
+  interruptionEvery: 2,
+};
+
+export function createInitialReaderState(books: NovelSource[]): ReaderState {
+  const sorted = sortBooksByRecent(books);
+
+  return {
+    books: sorted,
+    activeBookId: sorted[0]?.id ?? null,
+    activeChapterIndex: 0,
+    chapterReadOffset: 0,
+    settings: defaultSettings,
+  };
+}
+
+export function sortBooksByRecent(books: NovelSource[]): NovelSource[] {
+  return [...books].sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+export function selectBook(state: ReaderState, bookId: string): ReaderState {
+  if (!state.books.some((book) => book.id === bookId)) {
+    return state;
+  }
+
+  return {
+    ...state,
+    activeBookId: bookId,
+    activeChapterIndex: 0,
+    chapterReadOffset: 0,
+    books: sortBooksByRecent(
+      state.books.map((book) => (book.id === bookId ? { ...book, updatedAt: Date.now() } : book)),
+    ),
+  };
+}
+
+export function selectChapter(state: ReaderState, chapterIndex: number): ReaderState {
+  const book = getActiveBook(state);
+  if (!book) return state;
+  const bounded = clamp(chapterIndex, 0, Math.max(0, book.chapters.length - 1));
+
+  return {
+    ...state,
+    activeChapterIndex: bounded,
+    chapterReadOffset: 0,
+  };
+}
+
+export function stepChapter(state: ReaderState, delta: -1 | 1): ReaderState {
+  return selectChapter(state, state.activeChapterIndex + delta);
+}
+
+export function getActiveBook(state: ReaderState): NovelSource | null {
+  return state.books.find((book) => book.id === state.activeBookId) ?? null;
+}
+
+export function getActiveChapter(state: ReaderState) {
+  const book = getActiveBook(state);
+  return book?.chapters[state.activeChapterIndex] ?? null;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}

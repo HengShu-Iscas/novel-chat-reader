@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "NovelChat Reader",
+  "version": "0.1.0",
+  "description": "Present local TXT/EPUB reading sessions as AI-chat-style conversations.",
+  "action": {
+    "default_title": "Open Chat Session"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "boss-key": {
+      "suggested_key": {
+        "default": "Alt+B"
+      },
+      "description": "Switch to the configured chat site"
+    }
+  },
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [],
+  "icons": {
+    "128": "icons/icon-128.svg"
+  }
+}

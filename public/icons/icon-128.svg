@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="NovelChat Reader">
+  <rect width="128" height="128" rx="28" fill="#111111"/>
+  <path d="M31 37h66a9 9 0 0 1 9 9v33a9 9 0 0 1-9 9H55L38 101V88h-7a9 9 0 0 1-9-9V46a9 9 0 0 1 9-9Z" fill="#ffffff"/>
+  <path d="M43 53h42M43 65h54M43 77h30" stroke="#111111" stroke-width="8" stroke-linecap="round"/>
+</svg>

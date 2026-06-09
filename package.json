@@ -1,0 +1,32 @@
+{
+  "name": "novel-chat-reader",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "A Chrome/Edge MV3 extension that presents TXT/EPUB novels as AI-chat-style reading sessions.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "test": "vitest run",
+    "test:e2e": "node scripts/visual-smoke.mjs",
+    "visual:smoke": "node scripts/visual-smoke.mjs",
+    "scan:release": "node scripts/release-scan.mjs"
+  },
+  "dependencies": {
+    "dexie": "^4.4.3",
+    "fflate": "^0.8.3",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.43",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "playwright": "^1.60.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.8"
+  }
+}
