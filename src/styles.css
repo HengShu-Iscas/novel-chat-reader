@@ -714,6 +714,31 @@ button {
   font-size: 13px;
 }
 
+.drop-overlay {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+}
+
+.drop-overlay > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 0 20px;
+  border: 1px solid #d8d8d8;
+  border-radius: 18px;
+  background: #fff;
+  color: #202020;
+  font-size: 17px;
+  font-weight: 600;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.16);
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

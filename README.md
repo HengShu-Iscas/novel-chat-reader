@@ -8,6 +8,7 @@ It is an experimental, non-commercial open-source project. It is not affiliated 
 
 - Open a full extension tab that looks like a normal AI chat page.
 - Import local TXT and EPUB files.
+- Import from the visible upload button, the chat paperclip, drag-and-drop, or the desktop file picker.
 - Show book titles as recent chat items, without covers.
 - Use each book row's `...` menu as a chapter browser and chapter switcher.
 - Show the current chapter and previous/next controls inside the input box.
@@ -24,6 +25,12 @@ Regular users can run either generated file from `release/`:
 - `NovelChat Reader-0.1.0-win-x64-portable.exe`: portable app, no installation required.
 
 The desktop app keeps the same local IndexedDB library model as the extension build. Imported books and progress stay local to the current Windows user profile.
+
+Desktop import paths:
+
+- Click the top-right upload icon or the paperclip in the composer.
+- Drag one or more `.txt` / `.epub` files onto the window.
+- Use Windows "Open with" for `.txt` / `.epub` files after installing the app.
 
 To build the Windows desktop release:
 

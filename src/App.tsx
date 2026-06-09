@@ -6,7 +6,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
-  Download,
   Ellipsis,
   Mic,
   MoreHorizontal,
@@ -20,8 +19,10 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { parseEpub, parseTxt } from "./domain/parsers";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createFileFromDesktopImport } from "./domain/desktopImport";
+import { buildImportedBooks } from "./domain/importBooks";
+import { filterSupportedNovelFiles } from "./domain/importSource";
 import { createChapterSegments } from "./domain/segments";
 import {
   createInitialReaderState,
@@ -45,12 +46,14 @@ const providerLabels: Record<ApiProvider, string> = {
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
   const [reader, setReader] = useState(() => createInitialReaderState(sampleBooks));
   const [chapterMenuBookId, setChapterMenuBookId] = useState<string | null>(reader.activeBookId);
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessionKeys, setSessionKeys] = useState<Partial<Record<ApiProvider, string>>>({});
   const [draft, setDraft] = useState("");
+  const [draggingImport, setDraggingImport] = useState(false);
 
   const activeBook = getActiveBook(reader);
   const activeChapter = getActiveChapter(reader);
@@ -67,6 +70,24 @@ export default function App() {
       interruptionEvery: reader.settings.interruptionEvery,
     });
   }, [activeBook, activeChapter, reader.settings.interruptionEvery, reader.settings.maxChunkChars, reader.settings.minChunkChars]);
+
+  const importFiles = useCallback(async (files: Iterable<File>) => {
+    const importedBooks = await buildImportedBooks(files);
+    if (importedBooks.length === 0) return;
+
+    setReader((current) => createInitialReaderState([...importedBooks, ...current.books]));
+    setChapterMenuBookId(importedBooks[importedBooks.length - 1].id);
+  }, []);
+
+  const openImportPicker = useCallback(async () => {
+    if (window.novelChatDesktop?.openFiles) {
+      const desktopFiles = await window.novelChatDesktop.openFiles();
+      await importFiles(desktopFiles.map(createFileFromDesktopImport));
+      return;
+    }
+
+    fileInputRef.current?.click();
+  }, [importFiles]);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +112,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    return window.novelChatDesktop?.onOpenFiles((desktopFiles) => {
+      importFiles(desktopFiles.map(createFileFromDesktopImport)).catch(() => undefined);
+    });
+  }, [importFiles]);
+
+  useEffect(() => {
     persistLibrary(
       {
         id: "reader",
@@ -108,16 +135,6 @@ export default function App() {
     setReader((current) => ({ ...current, settings: { ...current.settings, ...patch } }));
   }
 
-  async function importFile(file: File) {
-    const buffer = await file.arrayBuffer();
-    const parsed = file.name.toLowerCase().endsWith(".epub")
-      ? await parseEpub(buffer, file.name)
-      : await parseTxt(buffer, file.name);
-    const book: NovelSource = { ...parsed, id: `${parsed.id}-${Date.now()}`, updatedAt: Date.now() };
-    setReader((current) => createInitialReaderState([book, ...current.books]));
-    setChapterMenuBookId(book.id);
-  }
-
   function chooseBook(bookId: string) {
     setReader((current) => selectBook(current, bookId));
     setChapterMenuBookId(bookId);
@@ -129,7 +146,33 @@ export default function App() {
   }
 
   return (
-    <div className={`app skin-${reader.settings.skin}`}>
+    <div
+      className={`app skin-${reader.settings.skin}`}
+      onDragEnter={(event) => {
+        if (!hasFileDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        dragDepthRef.current += 1;
+        setDraggingImport(true);
+      }}
+      onDragLeave={() => {
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) {
+          setDraggingImport(false);
+        }
+      }}
+      onDragOver={(event) => {
+        if (!hasFileDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        dragDepthRef.current = 0;
+        setDraggingImport(false);
+        const files = filterSupportedNovelFiles(event.dataTransfer.files);
+        importFiles(files).catch(() => undefined);
+      }}
+    >
       <Sidebar
         activeBookId={reader.activeBookId}
         books={reader.books}
@@ -142,7 +185,7 @@ export default function App() {
       />
       <main className="chat-main">
         <TopBar
-          onImport={() => fileInputRef.current?.click()}
+          onImport={() => openImportPicker().catch(() => undefined)}
           moreOpen={moreOpen}
           onMoreOpen={setMoreOpen}
           onSettings={() => {
@@ -164,6 +207,7 @@ export default function App() {
           draft={draft}
           inputPlaceholder={spec.inputPlaceholder}
           onDraft={setDraft}
+          onImport={() => openImportPicker().catch(() => undefined)}
           onPrev={() => setReader((current) => stepChapter(current, -1))}
           onNext={() => setReader((current) => stepChapter(current, 1))}
           skin={reader.settings.skin}
@@ -178,21 +222,35 @@ export default function App() {
           updateSettings={updateSettings}
         />
       )}
+      {draggingImport && (
+        <div className="drop-overlay" aria-live="polite">
+          <div>
+            <Upload size={24} />
+            <span>导入 TXT / EPUB</span>
+          </div>
+        </div>
+      )}
       <input
         ref={fileInputRef}
         className="visually-hidden"
         type="file"
         accept=".txt,.epub,text/plain,application/epub+zip"
         onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) {
-            importFile(file).catch(() => undefined);
+          const files = filterSupportedNovelFiles(event.target.files ?? []);
+          if (files.length > 0) {
+            importFiles(files).catch(() => undefined);
           }
           event.currentTarget.value = "";
         }}
+        multiple
       />
     </div>
   );
+}
+
+function hasFileDrag(dataTransfer: DataTransfer): boolean {
+  if (dataTransfer.items.length === 0) return dataTransfer.types.includes("Files");
+  return Array.from(dataTransfer.items).some((item) => item.kind === "file");
 }
 
 function Sidebar(props: {
@@ -320,8 +378,8 @@ function TopBar(props: {
     <header className="topbar">
       <div className="topbar-title">{title}</div>
       <div className="topbar-actions">
-        <button className="icon-button" aria-label="download">
-          <Download size={19} />
+        <button className="icon-button" aria-label="import novel" onClick={props.onImport}>
+          <Upload size={19} />
         </button>
         <button className="icon-button" aria-label="more" onClick={() => props.onMoreOpen(!props.moreOpen)}>
           <MoreHorizontal size={22} />
@@ -392,6 +450,7 @@ function Composer(props: {
   draft: string;
   inputPlaceholder: string;
   onDraft(value: string): void;
+  onImport(): void;
   onPrev(): void;
   onNext(): void;
   skin: SkinId;
@@ -416,7 +475,7 @@ function Composer(props: {
         />
         <div className="composer-tools">
           <div className="tool-left">
-            <button>
+            <button aria-label="import novel" onClick={props.onImport}>
               <Paperclip size={21} />
             </button>
             {props.skin === "doubao" && (

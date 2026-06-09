@@ -66,6 +66,16 @@
         }
       ]
     },
+    "fileAssociations": [
+      {
+        "ext": [
+          "txt",
+          "epub"
+        ],
+        "name": "NovelChat Reader Book",
+        "role": "Viewer"
+      }
+    ],
     "nsis": {
       "artifactName": "${productName}-${version}-win-${arch}.${ext}",
       "oneClick": false,
