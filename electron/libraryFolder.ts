@@ -15,7 +15,18 @@ export type LibraryFolderScanResult = {
   books: NovelSource[];
   errors: LibraryFolderScanError[];
   scannedAt: number;
+  cache: LibraryFolderScanCache;
+  changed: boolean;
 };
+
+export type LibraryFolderScanCache = Record<
+  string,
+  {
+    mtimeMs: number;
+    size: number;
+    book: NovelSource;
+  }
+>;
 
 export function getDefaultLibraryFolderPath(): string {
   return path.join(os.homedir(), "Documents", "NovelChat Books");
@@ -25,25 +36,46 @@ export async function ensureLibraryFolder(folderPath: string): Promise<void> {
   await mkdir(folderPath, { recursive: true });
 }
 
-export async function scanLibraryFolder(folderPath: string, now = Date.now()): Promise<LibraryFolderScanResult> {
+export async function scanLibraryFolder(
+  folderPath: string,
+  now = Date.now(),
+  cache: LibraryFolderScanCache = {},
+): Promise<LibraryFolderScanResult> {
   const root = path.resolve(folderPath);
   const entries = await readdir(root, { withFileTypes: true });
   const books: NovelSource[] = [];
   const errors: LibraryFolderScanError[] = [];
+  const nextCache: LibraryFolderScanCache = {};
+  let changed = false;
 
   for (const entry of entries) {
     if (!entry.isFile() || !isSupportedNovelImport(entry.name)) continue;
 
     const filePath = path.join(root, entry.name);
+    const cacheKey = makeFolderBookId(filePath);
     try {
-      const bytes = await readFile(filePath);
       const fileStat = await stat(filePath);
+      const cached = cache[cacheKey];
+      if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+        books.push(cached.book);
+        nextCache[cacheKey] = cached;
+        continue;
+      }
+
+      const bytes = await readFile(filePath);
       const parsed = await parseNovelBytes(bytes, entry.name);
-      books.push({
+      const book = {
         ...parsed,
-        id: makeFolderBookId(filePath),
+        id: cacheKey,
         updatedAt: Math.max(1, Math.floor(fileStat.mtimeMs)),
-      });
+      };
+      books.push(book);
+      nextCache[cacheKey] = {
+        mtimeMs: fileStat.mtimeMs,
+        size: fileStat.size,
+        book,
+      };
+      changed = true;
     } catch (error) {
       errors.push({
         fileName: entry.name,
@@ -52,10 +84,18 @@ export async function scanLibraryFolder(folderPath: string, now = Date.now()): P
     }
   }
 
+  const previousKeys = Object.keys(cache);
+  const nextKeys = Object.keys(nextCache);
+  if (previousKeys.length !== nextKeys.length || previousKeys.some((key) => !nextCache[key])) {
+    changed = true;
+  }
+
   return {
     books: books.sort(compareFolderBooks),
     errors,
     scannedAt: now,
+    cache: nextCache,
+    changed,
   };
 }
 

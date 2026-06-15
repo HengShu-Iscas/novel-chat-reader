@@ -60,6 +60,23 @@ describe("folder library scanner", () => {
     expect(third.books[0].chapters[0].text).toBe("正文 B");
   });
 
+  it("reuses unchanged parsed books from the scan cache", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-folder-"));
+    const filePath = path.join(tempDir, "cached.txt");
+    await writeFile(filePath, "Book body A", "utf8");
+
+    const first = await scanLibraryFolder(tempDir, 1);
+    const second = await scanLibraryFolder(tempDir, 2, first.cache);
+    await writeFile(filePath, "Book body B changed", "utf8");
+    const third = await scanLibraryFolder(tempDir, 3, second.cache);
+
+    expect(first.changed).toBe(true);
+    expect(second.changed).toBe(false);
+    expect(second.books[0]).toBe(first.books[0]);
+    expect(third.changed).toBe(true);
+    expect(third.books[0].chapters[0].text).toBe("Book body B changed");
+  });
+
   it("isolates broken EPUB files without blocking valid books", async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-folder-"));
     await writeFile(path.join(tempDir, "valid.txt"), "可读正文。", "utf8");

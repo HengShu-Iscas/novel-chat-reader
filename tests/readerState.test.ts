@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { addImportedBooks, createInitialReaderState, selectBook, selectChapter, stepChapter } from "../src/domain/readerState";
+import {
+  addImportedBooks,
+  createInitialReaderState,
+  mergeFolderLibrarySnapshot,
+  selectBook,
+  selectChapter,
+  stepChapter,
+} from "../src/domain/readerState";
 import type { NovelSource } from "../src/domain/types";
 
 const books: NovelSource[] = [
@@ -74,5 +81,30 @@ describe("reader state", () => {
     expect(updated.settings.skin).toBe("deepseek");
     expect(updated.settings.minChunkChars).toBe(260);
     expect(updated.activeBookId).toBe("new-book");
+  });
+
+  it("keeps the current selection when a passive folder scan returns stale metadata", () => {
+    const current = {
+      ...createInitialReaderState(books),
+      activeBookId: "b",
+      activeChapterIndex: 0,
+      chapterReadOffset: 0,
+    };
+
+    const stale = mergeFolderLibrarySnapshot(current, books, {
+      activeBookId: "a",
+      activeChapterIndex: 2,
+      chapterReadOffset: 0,
+    }, { preserveActiveSelection: true });
+    const deleted = mergeFolderLibrarySnapshot(current, [books[0]], {
+      activeBookId: "a",
+      activeChapterIndex: 2,
+      chapterReadOffset: 0,
+    }, { preserveActiveSelection: true });
+
+    expect(stale.activeBookId).toBe("b");
+    expect(stale.activeChapterIndex).toBe(0);
+    expect(deleted.activeBookId).toBe("a");
+    expect(deleted.activeChapterIndex).toBe(2);
   });
 });

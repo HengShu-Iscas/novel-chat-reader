@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { scanLibraryFolder } from "../electron/libraryFolder";
 import { isPathInsideDirectory, startLocalWebService, type LocalWebService } from "../electron/localWebService";
 import { defaultSettings } from "../src/domain/readerState";
 
@@ -41,6 +42,7 @@ describe("local web service", () => {
     await putJson(`${service.url}/api/settings`, { ...defaultSettings, sessionKeys: { openai: "secret" } });
     expect(await getJson(`${service.url}/api/settings`)).toEqual(defaultSettings);
     expect(JSON.stringify(await getJson(`${service.url}/api/settings`))).not.toContain("secret");
+    expect((await readdir(tempDir)).filter((name) => name.includes(".tmp"))).toEqual([]);
 
     await postJson(`${service.url}/api/imports`, {
       files: [{ name: "from-open-with.txt", bytes: Array.from(new TextEncoder().encode("text")) }],
@@ -77,6 +79,76 @@ describe("local web service", () => {
     });
 
     expect(await getJson(`${service.url}/api/settings`)).toEqual(defaultSettings);
+  });
+
+  it("falls back safely when the local state file is corrupted", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-service-"));
+    await writeFile(path.join(tempDir, "novelchat-local-state.json"), "{not-json", "utf8");
+
+    service = await startLocalWebService({
+      staticDir: tempDir,
+      userDataDir: tempDir,
+      preferredPort: 0,
+      openBrowser: false,
+    });
+
+    expect(await getJson(`${service.url}/api/library`)).toEqual({
+      books: [],
+      meta: { activeBookId: null, activeChapterIndex: 0, chapterReadOffset: 0 },
+    });
+  });
+
+  it("serializes folder rescans and library saves so the latest selected book wins", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-service-"));
+    const booksDir = path.join(tempDir, "books");
+    await mkdir(booksDir, { recursive: true });
+    await writeFile(path.join(booksDir, "first.txt"), "First body.", "utf8");
+    await writeFile(path.join(booksDir, "second.txt"), "Second body.", "utf8");
+
+    let delayNextScan = false;
+    const scanGate: { markStarted?: () => void; release?: () => void } = {};
+    const delayedScanStarted = new Promise<void>((resolve) => {
+      scanGate.markStarted = resolve;
+    });
+    const delayedScanReleased = new Promise<void>((resolve) => {
+      scanGate.release = resolve;
+    });
+
+    service = await startLocalWebService({
+      staticDir: tempDir,
+      userDataDir: tempDir,
+      preferredPort: 0,
+      openBrowser: false,
+      scanLibraryFolder: async (...args) => {
+        if (delayNextScan) {
+          scanGate.markStarted?.();
+          await delayedScanReleased;
+        }
+        return scanLibraryFolder(...args);
+      },
+    });
+
+    await putJson(`${service.url}/api/library-folder`, { path: booksDir });
+    const folderSnapshot = await postJson(`${service.url}/api/library-folder/rescan`, {});
+    const firstId = folderSnapshot.books.find((book: { title: string }) => book.title === "first").id;
+    const secondId = folderSnapshot.books.find((book: { title: string }) => book.title === "second").id;
+    await putJson(`${service.url}/api/library`, {
+      books: folderSnapshot.books,
+      meta: { activeBookId: firstId, activeChapterIndex: 0, chapterReadOffset: 0 },
+    });
+
+    delayNextScan = true;
+    const rescan = postJson(`${service.url}/api/library-folder/rescan`, {});
+    await delayedScanStarted;
+    const saveSecond = putJson(`${service.url}/api/library`, {
+      books: folderSnapshot.books,
+      meta: { activeBookId: secondId, activeChapterIndex: 0, chapterReadOffset: 0 },
+    });
+    scanGate.release?.();
+    await Promise.all([rescan, saveSecond]);
+
+    const library = await getJson(`${service.url}/api/library`);
+    expect(library.meta.activeBookId).toBe(secondId);
   });
 
   it("saves and rescans a folder library without keeping deleted files", async () => {

@@ -1,5 +1,5 @@
 import { app, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
-import { readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { DesktopImportFile } from "../src/domain/desktopImport";
 import { resolveDesktopBossKeyUrl } from "../src/domain/desktopBossKey";
@@ -12,6 +12,30 @@ let tray: Tray | null = null;
 let service: LocalWebService | null = null;
 let serviceUrl: string | null = null;
 let isQuitting = false;
+
+function getLogDir(): string {
+  return path.join(app.getPath("userData"), "logs");
+}
+
+function getLogPath(): string {
+  return path.join(getLogDir(), "novelchat.log");
+}
+
+async function appendRuntimeLog(kind: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? `${error.stack ?? error.message}` : String(error);
+  const entry = [
+    `[${new Date().toISOString()}] ${kind}`,
+    message,
+    "",
+  ].join("\n");
+  await mkdir(getLogDir(), { recursive: true });
+  await appendFile(getLogPath(), entry, "utf8");
+}
+
+async function openLogLocation(): Promise<void> {
+  await mkdir(getLogDir(), { recursive: true });
+  await shell.openPath(getLogDir());
+}
 
 async function readDesktopImportFiles(paths: Iterable<string>): Promise<DesktopImportFile[]> {
   const filePaths = getSupportedNovelPaths(paths);
@@ -99,6 +123,7 @@ function createTray(): void {
     Menu.buildFromTemplate([
       { label: "Open NovelChat", click: () => void openLocalWebPage() },
       { label: "Boss Key", click: () => void triggerBossKey() },
+      { label: "Open Logs", click: () => void openLogLocation() },
       {
         label: "Quit",
         click: () => {
@@ -148,6 +173,14 @@ function isAddressInUse(error: unknown): boolean {
 
 app.setAppUserModelId("io.github.hengshu.iscas.novelchatreader");
 
+process.on("uncaughtException", (error) => {
+  void appendRuntimeLog("uncaughtException", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  void appendRuntimeLog("unhandledRejection", reason);
+});
+
 ipcMain.handle("novel-chat:open-files-dialog", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openFile", "multiSelections"],
@@ -167,13 +200,17 @@ if (!app.requestSingleInstanceLock()) {
     void importPathsAndOpen(argv);
   });
 
-  void app.whenReady().then(async () => {
-    await startBrowserFirstRuntime();
-    createTray();
-    registerBossKey();
-    await importPathsAndOpen(process.argv);
-    await openLocalWebPage();
-  });
+  void app.whenReady()
+    .then(async () => {
+      await startBrowserFirstRuntime();
+      createTray();
+      registerBossKey();
+      await importPathsAndOpen(process.argv);
+      await openLocalWebPage();
+    })
+    .catch((error) => {
+      void appendRuntimeLog("startup", error);
+    });
 }
 
 app.on("before-quit", () => {

@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import type { DesktopImportFile } from "../src/domain/desktopImport";
@@ -8,7 +8,8 @@ import { toPersistedSettings, type SettingsDraft } from "../src/storage/persiste
 import {
   ensureLibraryFolder,
   getDefaultLibraryFolderPath,
-  scanLibraryFolder,
+  scanLibraryFolder as scanLibraryFolderDefault,
+  type LibraryFolderScanCache,
   type LibraryFolderScanError,
 } from "./libraryFolder";
 import {
@@ -27,12 +28,18 @@ type JsonImportFile = {
   bytes: number[];
 };
 
+type ScanContext = {
+  scanLibraryFolder: typeof scanLibraryFolderDefault;
+  scanCacheRef: { current: LibraryFolderScanCache };
+};
+
 export type StartLocalWebServiceOptions = {
   staticDir: string;
   userDataDir: string;
   preferredPort: number;
   openBrowser?: false | ((url: string) => void | Promise<void>);
   selectLibraryFolder?: false | (() => Promise<string | null>);
+  scanLibraryFolder?: typeof scanLibraryFolderDefault;
 };
 
 export type LocalWebService = {
@@ -43,8 +50,26 @@ export type LocalWebService = {
 
 export async function startLocalWebService(options: StartLocalWebServiceOptions): Promise<LocalWebService> {
   await mkdir(options.userDataDir, { recursive: true });
+  const scanContext: ScanContext = {
+    scanLibraryFolder: options.scanLibraryFolder ?? scanLibraryFolderDefault,
+    scanCacheRef: { current: {} },
+  };
   let state = await readLocalServiceState(options.userDataDir);
-  state = await maybeScanLibraryFolder(options.userDataDir, state);
+  state = await maybeScanLibraryFolder(options.userDataDir, state, scanContext);
+  let stateQueue: Promise<void> = Promise.resolve();
+
+  const withStateQueue = <T>(operation: () => Promise<T>): Promise<T> => {
+    const run = stateQueue.catch(() => undefined).then(operation);
+    stateQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+
+  const waitForStateQueue = async (): Promise<void> => {
+    await stateQueue.catch(() => undefined);
+  };
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -63,49 +88,46 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
       }
 
       if (url.pathname === "/api/library" && request.method === "GET") {
-        state = await maybeScanLibraryFolder(options.userDataDir, state);
-        writeJson(response, 200, {
-          books: state.books,
-          meta: {
-            activeBookId: state.meta.activeBookId,
-            activeChapterIndex: state.meta.activeChapterIndex,
-            chapterReadOffset: state.meta.chapterReadOffset,
-          },
+        const snapshot = await withStateQueue(async () => {
+          state = await maybeScanLibraryFolder(options.userDataDir, state, scanContext);
+          return getLibrarySnapshot(state);
         });
+        writeJson(response, 200, snapshot);
         return;
       }
 
       if (url.pathname === "/api/library" && request.method === "PUT") {
-        const body = (await readJson(request)) as Parameters<typeof withLocalLibrary>[1];
-        state = withLocalLibrary(state, body);
-        await writeLocalServiceState(options.userDataDir, state);
+        await withStateQueue(async () => {
+          const body = (await readJson(request)) as Parameters<typeof withLocalLibrary>[1];
+          state = withLocalLibrary(state, body);
+          await writeLocalServiceState(options.userDataDir, state);
+        });
         writeJson(response, 200, { ok: true });
         return;
       }
 
       if (url.pathname === "/api/library-folder" && request.method === "GET") {
+        await waitForStateQueue();
         writeJson(response, 200, getLibraryFolderStatus(state));
         return;
       }
 
       if (url.pathname === "/api/library-folder" && request.method === "PUT") {
-        const body = (await readJson(request)) as { path?: string | null };
-        state = await setLibraryFolderPath(options.userDataDir, state, body.path ?? null);
-        writeJson(response, 200, getLibraryFolderStatus(state));
+        const status = await withStateQueue(async () => {
+          const body = (await readJson(request)) as { path?: string | null };
+          state = await setLibraryFolderPath(options.userDataDir, state, body.path ?? null, scanContext);
+          return getLibraryFolderStatus(state);
+        });
+        writeJson(response, 200, status);
         return;
       }
 
       if (url.pathname === "/api/library-folder/rescan" && request.method === "POST") {
-        state = await maybeScanLibraryFolder(options.userDataDir, state, true);
-        writeJson(response, 200, {
-          ...getLibraryFolderStatus(state),
-          books: state.books,
-          meta: {
-            activeBookId: state.meta.activeBookId,
-            activeChapterIndex: state.meta.activeChapterIndex,
-            chapterReadOffset: state.meta.chapterReadOffset,
-          },
+        const snapshot = await withStateQueue(async () => {
+          state = await maybeScanLibraryFolder(options.userDataDir, state, scanContext, true);
+          return getLibraryFolderSnapshot(state);
         });
+        writeJson(response, 200, snapshot);
         return;
       }
 
@@ -119,37 +141,48 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
           writeJson(response, 200, { cancelled: true, ...getLibraryFolderStatus(state) });
           return;
         }
-        state = await setLibraryFolderPath(options.userDataDir, state, selectedPath);
-        writeJson(response, 200, { cancelled: false, ...getLibraryFolderSnapshot(state) });
+        const snapshot = await withStateQueue(async () => {
+          state = await setLibraryFolderPath(options.userDataDir, state, selectedPath, scanContext);
+          return getLibraryFolderSnapshot(state);
+        });
+        writeJson(response, 200, { cancelled: false, ...snapshot });
         return;
       }
 
       if (url.pathname === "/api/settings" && request.method === "GET") {
+        await waitForStateQueue();
         writeJson(response, 200, state.meta.settings);
         return;
       }
 
       if (url.pathname === "/api/settings" && request.method === "PUT") {
-        const body = (await readJson(request)) as ReaderSettings;
-        state = withLocalSettings(state, body);
-        await writeLocalServiceState(options.userDataDir, state);
+        await withStateQueue(async () => {
+          const body = (await readJson(request)) as ReaderSettings;
+          state = withLocalSettings(state, body);
+          await writeLocalServiceState(options.userDataDir, state);
+        });
         writeJson(response, 200, { ok: true });
         return;
       }
 
       if (url.pathname === "/api/imports" && request.method === "POST") {
-        const body = (await readJson(request)) as { files?: JsonImportFile[] };
-        state = enqueuePendingImports(state, (body.files ?? []).map(importFromJson));
-        await writeLocalServiceState(options.userDataDir, state);
+        await withStateQueue(async () => {
+          const body = (await readJson(request)) as { files?: JsonImportFile[] };
+          state = enqueuePendingImports(state, (body.files ?? []).map(importFromJson));
+          await writeLocalServiceState(options.userDataDir, state);
+        });
         writeJson(response, 200, { ok: true });
         return;
       }
 
       if (url.pathname === "/api/imports/pending" && request.method === "GET") {
-        const drained = drainPendingImports(state);
-        state = drained.state;
-        await writeLocalServiceState(options.userDataDir, state);
-        writeJson(response, 200, { files: drained.imports.map(importToJson) });
+        const imports = await withStateQueue(async () => {
+          const drained = drainPendingImports(state);
+          state = drained.state;
+          await writeLocalServiceState(options.userDataDir, state);
+          return drained.imports;
+        });
+        writeJson(response, 200, { files: imports.map(importToJson) });
         return;
       }
 
@@ -225,11 +258,19 @@ async function readLocalServiceState(userDataDir: string): Promise<LocalServiceS
 
 async function writeLocalServiceState(userDataDir: string, state: LocalServiceState): Promise<void> {
   await mkdir(userDataDir, { recursive: true });
-  await writeFile(
-    getStatePath(userDataDir),
-    JSON.stringify({ ...state, pendingImports: state.pendingImports.map(importToJson) }, null, 2),
-    "utf8",
-  );
+  const statePath = getStatePath(userDataDir);
+  const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(
+      tempPath,
+      JSON.stringify({ ...state, pendingImports: state.pendingImports.map(importToJson) }, null, 2),
+      "utf8",
+    );
+    await rename(tempPath, statePath);
+  } catch (error) {
+    await rm(tempPath, { force: true });
+    throw error;
+  }
 }
 
 function getStatePath(userDataDir: string): string {
@@ -248,13 +289,16 @@ async function setLibraryFolderPath(
   userDataDir: string,
   state: LocalServiceState,
   folderPath: string | null,
+  scanContext: ScanContext,
 ): Promise<LocalServiceState> {
   const normalizedPath = normalizeLibraryFolderPath(folderPath);
   let next = withLibraryFolderPath(state, normalizedPath);
   if (normalizedPath) {
     await ensureLibraryFolder(normalizedPath);
-    next = await maybeScanLibraryFolder(userDataDir, next, true);
+    scanContext.scanCacheRef.current = {};
+    next = await maybeScanLibraryFolder(userDataDir, next, scanContext, true);
   } else {
+    scanContext.scanCacheRef.current = {};
     await writeLocalServiceState(userDataDir, next);
   }
   return next;
@@ -263,6 +307,7 @@ async function setLibraryFolderPath(
 async function maybeScanLibraryFolder(
   userDataDir: string,
   state: LocalServiceState,
+  scanContext: ScanContext,
   force = false,
 ): Promise<LocalServiceState> {
   if (!state.libraryFolder.path) return state;
@@ -272,9 +317,16 @@ async function maybeScanLibraryFolder(
 
   try {
     await ensureLibraryFolder(state.libraryFolder.path);
-    const scan = await scanLibraryFolder(state.libraryFolder.path);
+    const scan = await scanContext.scanLibraryFolder(
+      state.libraryFolder.path,
+      Date.now(),
+      scanContext.scanCacheRef.current,
+    );
+    scanContext.scanCacheRef.current = scan.cache;
     const next = withLibraryFolderScan(state, scan);
-    await writeLocalServiceState(userDataDir, next);
+    if (scan.changed || !sameScanErrors(state.libraryFolder.errors, scan.errors)) {
+      await writeLocalServiceState(userDataDir, next);
+    }
     return next;
   } catch (error) {
     const next = {
@@ -312,6 +364,12 @@ function getLibraryFolderStatus(state: LocalServiceState) {
 function getLibraryFolderSnapshot(state: LocalServiceState) {
   return {
     ...getLibraryFolderStatus(state),
+    ...getLibrarySnapshot(state),
+  };
+}
+
+function getLibrarySnapshot(state: LocalServiceState) {
+  return {
     books: state.books,
     meta: {
       activeBookId: state.meta.activeBookId,
@@ -319,6 +377,10 @@ function getLibraryFolderSnapshot(state: LocalServiceState) {
       chapterReadOffset: state.meta.chapterReadOffset,
     },
   };
+}
+
+function sameScanErrors(left: LibraryFolderScanError[], right: LibraryFolderScanError[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function readJson(request: http.IncomingMessage): Promise<unknown> {

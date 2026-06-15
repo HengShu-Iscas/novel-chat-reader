@@ -31,6 +31,7 @@ import {
   addImportedBooks,
   getActiveBook,
   getActiveChapter,
+  mergeFolderLibrarySnapshot,
   selectBook,
   selectChapter,
   stepChapter,
@@ -77,6 +78,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageStreamRef = useRef<HTMLElement>(null);
   const dragDepthRef = useRef(0);
+  const persistQueueRef = useRef(Promise.resolve());
   const [reader, setReader] = useState(() => createInitialReaderState([]));
   const [chapterMenu, setChapterMenu] = useState<ChapterMenuState | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -129,7 +131,7 @@ export default function App() {
     fileInputRef.current?.click();
   }, [importFiles]);
 
-  const applyLocalWebLibraryFolderResult = useCallback((result: LocalLibraryFolderScanResult) => {
+  const applyLocalWebLibraryFolderResult = useCallback((result: LocalLibraryFolderScanResult, options = { preserveActiveSelection: false }) => {
     setLibraryFolder({
       path: result.path,
       defaultPath: result.defaultPath,
@@ -138,13 +140,9 @@ export default function App() {
     });
 
     if (!result.books || !result.meta) return;
-    setReader((current) => ({
-      ...current,
-      books: result.books ?? current.books,
-      activeBookId: result.meta?.activeBookId ?? current.activeBookId,
-      activeChapterIndex: result.meta?.activeChapterIndex ?? current.activeChapterIndex,
-      chapterReadOffset: result.meta?.chapterReadOffset ?? current.chapterReadOffset,
-    }));
+    setReader((current) =>
+      mergeFolderLibrarySnapshot(current, result.books ?? current.books, result.meta!, options),
+    );
     setChapterMenu(null);
   }, []);
 
@@ -229,7 +227,7 @@ export default function App() {
     const pullFolderLibrary = async () => {
       const result = await rescanLocalWebLibraryFolder();
       if (disposed) return;
-      applyLocalWebLibraryFolderResult(result);
+      applyLocalWebLibraryFolderResult(result, { preserveActiveSelection: true });
     };
 
     const timer = window.setInterval(() => {
@@ -253,7 +251,10 @@ export default function App() {
     };
 
     if (localWebStorage) {
-      localWebStorage.persist({ books: reader.books, meta }).catch(() => undefined);
+      persistQueueRef.current = persistQueueRef.current
+        .catch(() => undefined)
+        .then(() => localWebStorage.persist({ books: reader.books, meta }))
+        .catch(() => undefined);
       return;
     }
 

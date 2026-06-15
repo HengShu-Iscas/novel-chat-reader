@@ -71,6 +71,45 @@ export function stepChapter(state: ReaderState, delta: -1 | 1): ReaderState {
   return selectChapter(state, state.activeChapterIndex + delta);
 }
 
+export function mergeFolderLibrarySnapshot(
+  state: ReaderState,
+  books: NovelSource[],
+  meta: {
+    activeBookId: string | null;
+    activeChapterIndex: number;
+    chapterReadOffset: number;
+  },
+  options: { preserveActiveSelection: boolean },
+): ReaderState {
+  const currentBook = state.activeBookId
+    ? books.find((book) => book.id === state.activeBookId) ?? null
+    : null;
+
+  if (options.preserveActiveSelection && currentBook) {
+    return {
+      ...state,
+      books,
+      activeBookId: currentBook.id,
+      activeChapterIndex: clamp(state.activeChapterIndex, 0, Math.max(0, currentBook.chapters.length - 1)),
+      chapterReadOffset: state.chapterReadOffset,
+    };
+  }
+
+  const fallbackBookId =
+    meta.activeBookId && books.some((book) => book.id === meta.activeBookId)
+      ? meta.activeBookId
+      : books[0]?.id ?? null;
+  const fallbackBook = books.find((book) => book.id === fallbackBookId) ?? null;
+
+  return {
+    ...state,
+    books,
+    activeBookId: fallbackBookId,
+    activeChapterIndex: clamp(meta.activeChapterIndex, 0, Math.max(0, (fallbackBook?.chapters.length ?? 1) - 1)),
+    chapterReadOffset: fallbackBook ? Math.max(0, meta.chapterReadOffset) : 0,
+  };
+}
+
 export function getActiveBook(state: ReaderState): NovelSource | null {
   return state.books.find((book) => book.id === state.activeBookId) ?? null;
 }

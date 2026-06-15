@@ -157,6 +157,8 @@ await waitForBookRows(page, 2);
 await assertVisibleTextDoesNotLeak(page, ["smoke-picker-import", "smoke-drag-import"]);
 await assertActiveChapter(page, "第2章");
 
+await runLocalWebFolderSelectionSmoke(browser);
+
 await browser.close();
 await server.close();
 
@@ -359,6 +361,201 @@ async function assertMessageStreamAtTop(page) {
   if (scrollTop > 2) {
     throw new Error(`Message stream did not return to top after chapter switch: ${scrollTop}`);
   }
+}
+
+async function runLocalWebFolderSelectionSmoke(browser) {
+  const smokeServer = await createLocalWebSmokeServer(distDir);
+  const smokePage = await browser.newPage({ viewport: viewports[0][1] });
+  const smokeErrors = [];
+  smokePage.on("console", (message) => {
+    if (message.type() === "error") {
+      smokeErrors.push(message.text());
+    }
+  });
+  smokePage.on("pageerror", (error) => {
+    smokeErrors.push(error.message);
+  });
+
+  try {
+    await smokePage.goto(smokeServer.url);
+    await smokePage.locator(".app.skin-chatgpt").waitFor({ timeout: 10000 });
+    await waitForBookRows(smokePage, 2);
+    await smokePage.locator(".book-row").nth(1).click();
+    await waitForSecondLocalWebBook(smokePage);
+    await smokePage.waitForTimeout(10600);
+    await waitForSecondLocalWebBook(smokePage);
+    await smokePage.screenshot({
+      path: path.join(outputDir, "novelchat-local-web-selection-smoke.png"),
+      fullPage: true,
+    });
+  } finally {
+    await smokePage.close();
+    await smokeServer.close();
+  }
+
+  if (smokeErrors.length > 0) {
+    throw new Error(`Local-web smoke saw browser errors:\n${smokeErrors.join("\n")}`);
+  }
+}
+
+async function waitForSecondLocalWebBook(page) {
+  await page.waitForFunction(() => {
+    const streamText = document.querySelector(".message-stream")?.textContent ?? "";
+    return streamText.includes("Second book sentence") && !streamText.includes("First book sentence");
+  });
+}
+
+async function createLocalWebSmokeServer(rootDir) {
+  const books = [
+    {
+      id: "folder-smoke-first",
+      title: "first-local-web-smoke",
+      format: "txt",
+      updatedAt: 2,
+      chapters: [
+        {
+          id: "first-1",
+          title: "Chapter 1",
+          text: "First book sentence. This should not return after selecting the second book.",
+        },
+      ],
+    },
+    {
+      id: "folder-smoke-second",
+      title: "second-local-web-smoke",
+      format: "txt",
+      updatedAt: 1,
+      chapters: [
+        {
+          id: "second-1",
+          title: "Chapter 1",
+          text: "Second book sentence. This should remain selected after passive rescans.",
+        },
+      ],
+    },
+  ];
+  let meta = { activeBookId: books[0].id, activeChapterIndex: 0, chapterReadOffset: 0 };
+  const staleMeta = { ...meta };
+  const settings = {
+    skin: "chatgpt",
+    bossKeyTarget: "chatgpt",
+    apiPolishEnabled: false,
+    minChunkChars: 180,
+    maxChunkChars: 350,
+    interruptionEvery: 2,
+    topicDisguiseTheme: "work",
+    display: {},
+  };
+
+  const server = http.createServer(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/health") {
+      writeJsonResponse(response, 200, { name: "novel-chat-reader", mode: "local-web" });
+      return;
+    }
+    if (url.pathname === "/api/library" && request.method === "GET") {
+      writeJsonResponse(response, 200, { books, meta });
+      return;
+    }
+    if (url.pathname === "/api/library" && request.method === "PUT") {
+      const body = await readRequestJson(request);
+      meta = body.meta ?? meta;
+      writeJsonResponse(response, 200, { ok: true });
+      return;
+    }
+    if (url.pathname === "/api/settings" && request.method === "GET") {
+      writeJsonResponse(response, 200, { settings });
+      return;
+    }
+    if (url.pathname === "/api/settings" && request.method === "PUT") {
+      writeJsonResponse(response, 200, { ok: true });
+      return;
+    }
+    if (url.pathname === "/api/imports/pending" && request.method === "GET") {
+      writeJsonResponse(response, 200, { files: [] });
+      return;
+    }
+    if (url.pathname === "/api/library-folder" && request.method === "GET") {
+      writeJsonResponse(response, 200, {
+        path: "C:\\Smoke",
+        defaultPath: "C:\\Smoke",
+        lastScanAt: Date.now(),
+        errors: [],
+      });
+      return;
+    }
+    if (url.pathname === "/api/library-folder/rescan" && request.method === "POST") {
+      writeJsonResponse(response, 200, {
+        path: "C:\\Smoke",
+        defaultPath: "C:\\Smoke",
+        lastScanAt: Date.now(),
+        errors: [],
+        books,
+        meta: staleMeta,
+      });
+      return;
+    }
+
+    await serveDistFile(rootDir, url.pathname, response);
+  });
+
+  for (let port = 17661; port < 17681; port += 1) {
+    try {
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      return {
+        url: `http://127.0.0.1:${port}/`,
+        close: () => new Promise((resolve) => server.close(resolve)),
+      };
+    } catch {
+      server.removeAllListeners("error");
+    }
+  }
+
+  throw new Error("Unable to start local-web smoke server on a 176xx port");
+}
+
+async function serveDistFile(rootDir, rawPath, response) {
+  if (rawPath === "/favicon.ico") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+  const safePath = rawPath === "/" ? "/index.html" : rawPath;
+  const filePath = path.join(rootDir, decodeURIComponent(safePath));
+  if (!isPathInsideDirectory(filePath, rootDir)) {
+    response.writeHead(403);
+    response.end("Forbidden");
+    return;
+  }
+
+  try {
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile()) throw new Error("not a file");
+    streamFile(response, filePath);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
+  }
+}
+
+async function readRequestJson(request) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const body = Buffer.concat(chunks).toString("utf8");
+  return body ? JSON.parse(body) : {};
+}
+
+function writeJsonResponse(response, statusCode, body) {
+  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(body));
 }
 
 async function launchBrowser() {
