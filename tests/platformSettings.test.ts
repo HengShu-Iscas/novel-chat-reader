@@ -11,6 +11,7 @@ describe("platform settings payload", () => {
       minChunkChars: 240,
       maxChunkChars: 720,
       interruptionEvery: 3,
+      topicDisguiseTheme: "meetings",
       sessionKeys: { doubao: "secret-key" },
     });
 
@@ -21,6 +22,7 @@ describe("platform settings payload", () => {
       minChunkChars: 240,
       maxChunkChars: 720,
       interruptionEvery: 3,
+      topicDisguiseTheme: "meetings",
       display: defaultDisplaySettings,
     });
     expect("sessionKeys" in payload).toBe(false);

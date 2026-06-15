@@ -15,6 +15,20 @@ describe("parseTxt", () => {
       { id: "ch-2", title: "第二章 夜雨", text: "雨声渐近。" },
     ]);
   });
+
+  it("keeps untitled text as a single body chapter", async () => {
+    const text = "没有章节标题。\n但正文仍然应该可读。";
+
+    const result = await parseTxt(new TextEncoder().encode(text).buffer, "untitled.txt");
+
+    expect(result.chapters).toEqual([{ id: "ch-1", title: "正文", text }]);
+  });
+
+  it("creates a stable empty body chapter for blank text files", async () => {
+    const result = await parseTxt(new TextEncoder().encode("").buffer, "blank.txt");
+
+    expect(result.chapters).toEqual([{ id: "ch-1", title: "正文", text: "" }]);
+  });
 });
 
 describe("parseEpub", () => {

@@ -19,6 +19,7 @@ const persistedSettings = {
   minChunkChars: 200,
   maxChunkChars: 600,
   interruptionEvery: 4,
+  topicDisguiseTheme: "work",
   display: defaultDisplaySettings,
 };
 

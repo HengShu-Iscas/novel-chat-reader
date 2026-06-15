@@ -1,8 +1,8 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startLocalWebService, type LocalWebService } from "../electron/localWebService";
+import { isPathInsideDirectory, startLocalWebService, type LocalWebService } from "../electron/localWebService";
 import { defaultSettings } from "../src/domain/readerState";
 
 let service: LocalWebService | null = null;
@@ -78,6 +78,68 @@ describe("local web service", () => {
 
     expect(await getJson(`${service.url}/api/settings`)).toEqual(defaultSettings);
   });
+
+  it("saves and rescans a folder library without keeping deleted files", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-service-"));
+    const booksDir = path.join(tempDir, "books");
+    await mkdir(booksDir, { recursive: true });
+    await writeFile(path.join(booksDir, "folder-book.txt"), "第一章 目录\n正文。", "utf8");
+
+    service = await startLocalWebService({
+      staticDir: tempDir,
+      userDataDir: tempDir,
+      preferredPort: 0,
+      openBrowser: false,
+    });
+
+    const status = await putJson(`${service.url}/api/library-folder`, { path: booksDir });
+    expect(status).toMatchObject({ path: booksDir, errors: [] });
+
+    const library = await getJson(`${service.url}/api/library`);
+    expect(library.books).toHaveLength(1);
+    expect(library.books[0].title).toBe("folder-book");
+
+    await unlink(path.join(booksDir, "folder-book.txt"));
+    const rescanned = await postJson(`${service.url}/api/library-folder/rescan`, {});
+    expect(rescanned.books).toEqual([]);
+  });
+
+  it("uses the native folder selector callback when exposed by the launcher", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-service-"));
+    const booksDir = path.join(tempDir, "selected-books");
+    await mkdir(booksDir, { recursive: true });
+    await writeFile(path.join(booksDir, "selected.txt"), "正文。", "utf8");
+
+    service = await startLocalWebService({
+      staticDir: tempDir,
+      userDataDir: tempDir,
+      preferredPort: 0,
+      openBrowser: false,
+      selectLibraryFolder: async () => booksDir,
+    });
+
+    const selected = await postJson(`${service.url}/api/library-folder/select`, {});
+
+    expect(selected.cancelled).toBe(false);
+    expect(selected.path).toBe(booksDir);
+    expect(selected.books.map((book: { title: string }) => book.title)).toEqual(["selected"]);
+  });
+});
+
+describe("local web static path guard", () => {
+  it("accepts files inside the static directory", () => {
+    const staticRoot = path.resolve("dist");
+    const filePath = path.join(staticRoot, "assets", "index.js");
+
+    expect(isPathInsideDirectory(filePath, staticRoot)).toBe(true);
+  });
+
+  it("rejects sibling directories with the same prefix", () => {
+    const staticRoot = path.resolve("dist");
+    const sibling = path.resolve("dist-evil", "index.html");
+
+    expect(isPathInsideDirectory(sibling, staticRoot)).toBe(false);
+  });
 });
 
 async function getJson(url: string) {
@@ -93,6 +155,7 @@ async function putJson(url: string, body: unknown) {
     body: JSON.stringify(body),
   });
   expect(response.ok).toBe(true);
+  return response.json();
 }
 
 async function postJson(url: string, body: unknown) {
@@ -102,4 +165,5 @@ async function postJson(url: string, body: unknown) {
     body: JSON.stringify(body),
   });
   expect(response.ok).toBe(true);
+  return response.json();
 }

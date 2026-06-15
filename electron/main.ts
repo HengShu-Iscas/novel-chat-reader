@@ -1,11 +1,11 @@
-import { app, globalShortcut, Menu, nativeImage, shell, Tray } from "electron";
+import { app, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { DesktopImportFile } from "../src/domain/desktopImport";
 import { resolveDesktopBossKeyUrl } from "../src/domain/desktopBossKey";
 import { getSupportedNovelPaths } from "../src/domain/importSource";
 import type { ReaderSettings } from "../src/domain/types";
-import { LOCAL_SERVICE_PORT } from "./localServicePorts";
+import { detectLocalServicePortStatus, LOCAL_SERVICE_PORT } from "./localServicePorts";
 import { startLocalWebService, type LocalWebService } from "./localWebService";
 
 let tray: Tray | null = null;
@@ -28,6 +28,14 @@ async function openLocalWebPage(): Promise<void> {
   await shell.openExternal(`${serviceUrl}/`);
 }
 
+async function selectLibraryFolderWithDialog(): Promise<string | null> {
+  const result = await dialog.showOpenDialog({
+    properties: ["openDirectory", "createDirectory"],
+    title: "Select library folder",
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+}
+
 async function sendPendingImports(imports: DesktopImportFile[]): Promise<void> {
   if (!serviceUrl || imports.length === 0) return;
   await fetch(`${serviceUrl}/api/imports`, {
@@ -48,6 +56,15 @@ async function importPathsAndOpen(paths: Iterable<string>): Promise<void> {
 async function triggerBossKey(): Promise<void> {
   const target = await getCurrentBossKeyTarget();
   await shell.openExternal(resolveDesktopBossKeyUrl(target));
+}
+
+async function saveSettingsToLocalService(settings: ReaderSettings): Promise<void> {
+  if (!serviceUrl) return;
+  await fetch(`${serviceUrl}/api/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
 }
 
 async function getCurrentBossKeyTarget(): Promise<ReaderSettings["bossKeyTarget"]> {
@@ -99,12 +116,21 @@ async function startBrowserFirstRuntime(): Promise<void> {
   const userDataDir = app.getPath("userData");
 
   for (let offset = 0; offset < 20; offset += 1) {
+    const port = LOCAL_SERVICE_PORT + offset;
+    const status = await detectLocalServicePortStatus(port);
+    if (status === "novel-chat") {
+      serviceUrl = `http://127.0.0.1:${port}`;
+      return;
+    }
+    if (status === "occupied") continue;
+
     try {
       service = await startLocalWebService({
         staticDir,
         userDataDir,
-        preferredPort: LOCAL_SERVICE_PORT + offset,
+        preferredPort: port,
         openBrowser: false,
+        selectLibraryFolder: selectLibraryFolderWithDialog,
       });
       serviceUrl = service.url;
       return;
@@ -121,6 +147,18 @@ function isAddressInUse(error: unknown): boolean {
 }
 
 app.setAppUserModelId("io.github.hengshu.iscas.novelchatreader");
+
+ipcMain.handle("novel-chat:open-files-dialog", async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ["openFile", "multiSelections"],
+    filters: [{ name: "Novel files", extensions: ["txt", "epub"] }],
+  });
+  return result.canceled ? [] : readDesktopImportFiles(result.filePaths);
+});
+
+ipcMain.handle("novel-chat:select-library-folder", () => selectLibraryFolderWithDialog());
+ipcMain.handle("novel-chat:save-settings", (_event, settings: ReaderSettings) => saveSettingsToLocalService(settings));
+ipcMain.handle("novel-chat:boss-key", () => triggerBossKey());
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

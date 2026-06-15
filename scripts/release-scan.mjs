@@ -13,7 +13,47 @@ const ignoredDirs = new Set([
   "playwright-report",
   "test-results",
 ]);
-const blockedExtensions = new Set([".epub", ".pem", ".key", ".p12", ".pfx", ".crt"]);
+const blockedExtensions = new Map([
+  [".txt", "plain text book or private notes"],
+  [".epub", "ebook"],
+  [".mobi", "ebook"],
+  [".azw", "ebook"],
+  [".azw3", "ebook"],
+  [".pdf", "document or private asset"],
+  [".doc", "document or private asset"],
+  [".docx", "document or private asset"],
+  [".rtf", "document or private asset"],
+  [".png", "raster image or screenshot"],
+  [".jpg", "raster image or screenshot"],
+  [".jpeg", "raster image or screenshot"],
+  [".webp", "raster image or screenshot"],
+  [".gif", "raster image or screenshot"],
+  [".bmp", "raster image or screenshot"],
+  [".tif", "raster image or screenshot"],
+  [".tiff", "raster image or screenshot"],
+  [".ico", "image asset"],
+  [".avif", "image asset"],
+  [".heic", "image asset"],
+  [".psd", "source image asset"],
+  [".zip", "archive"],
+  [".rar", "archive"],
+  [".7z", "archive"],
+  [".tar", "archive"],
+  [".gz", "archive"],
+  [".bz2", "archive"],
+  [".xz", "archive"],
+  [".mp3", "audio asset"],
+  [".wav", "audio asset"],
+  [".flac", "audio asset"],
+  [".mp4", "video asset"],
+  [".mov", "video asset"],
+  [".webm", "video asset"],
+  [".pem", "private key or certificate"],
+  [".key", "private key or certificate"],
+  [".p12", "private key or certificate"],
+  [".pfx", "private key or certificate"],
+  [".crt", "private key or certificate"],
+]);
 const suspiciousPatterns = [
   /sk-[A-Za-z0-9_-]{20,}/,
   /gho_[A-Za-z0-9_]{20,}/,
@@ -39,7 +79,7 @@ async function walk(directory) {
 
     const ext = path.extname(entry.name).toLowerCase();
     if (blockedExtensions.has(ext)) {
-      findings.push(`blocked file type: ${relative}`);
+      findings.push(`blocked ${blockedExtensions.get(ext)} file: ${relative}`);
       continue;
     }
 
@@ -82,4 +122,6 @@ if (findings.length > 0) {
   process.exit(1);
 }
 
-console.log("Release scan passed: no obvious secrets, private key files, or EPUB files found.");
+console.log(
+  "Release scan passed: no obvious secrets, books, screenshots, archives, private key files, or private assets found.",
+);

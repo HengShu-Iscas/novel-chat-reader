@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld("novelChatDesktop", {
     return () => ipcRenderer.off("novel-chat:open-files", handler);
   },
   saveSettings: (settings: ReaderSettings) => ipcRenderer.invoke("novel-chat:save-settings", settings),
+  selectLibraryFolder: () => ipcRenderer.invoke("novel-chat:select-library-folder") as Promise<string | null>,
   triggerBossKey: () => ipcRenderer.invoke("novel-chat:boss-key"),
 });

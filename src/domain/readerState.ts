@@ -7,6 +7,7 @@ export const defaultSettings: ReaderSettings = {
   minChunkChars: 180,
   maxChunkChars: 350,
   interruptionEvery: 2,
+  topicDisguiseTheme: "work",
   display: defaultDisplaySettings,
 };
 

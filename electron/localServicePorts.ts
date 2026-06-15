@@ -7,6 +7,22 @@ export type LocalServicePortChoice = {
   reuseExisting: boolean;
 };
 
+export type HealthFetch = (url: string) => Promise<Response>;
+
+export async function detectLocalServicePortStatus(
+  port: number,
+  fetchImpl: HealthFetch = fetch,
+): Promise<PortStatus> {
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${port}/health`);
+    if (!response.ok) return "occupied";
+    const body = (await response.json()) as { name?: string; mode?: string };
+    return body.name === "novel-chat-reader" && body.mode === "local-web" ? "novel-chat" : "occupied";
+  } catch {
+    return "free";
+  }
+}
+
 export function chooseLocalServicePort(
   statuses: Record<number, PortStatus>,
   preferredPort = LOCAL_SERVICE_PORT,

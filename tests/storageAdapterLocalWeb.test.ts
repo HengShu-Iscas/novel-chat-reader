@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { createLocalWebStorageAdapter, fetchLocalWebPendingImports } from "../src/storage/storageAdapter";
+import {
+  createLocalWebStorageAdapter,
+  fetchLocalWebLibraryFolderStatus,
+  fetchLocalWebPendingImports,
+  rescanLocalWebLibraryFolder,
+  saveLocalWebLibraryFolderPath,
+  selectLocalWebLibraryFolder,
+} from "../src/storage/storageAdapter";
 import { defaultSettings } from "../src/domain/readerState";
 
 describe("local-web storage adapter", () => {
@@ -57,6 +64,33 @@ describe("local-web storage adapter", () => {
     expect(imports[0].name).toBe("queued.txt");
     expect(imports[0].bytes).toBeInstanceOf(Uint8Array);
     expect(Array.from(imports[0].bytes)).toEqual([1, 2, 3]);
+  });
+
+  it("loads, saves, selects, and rescans the local folder library", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url === "/api/library-folder/select") {
+        return jsonResponse({ path: "C:\\Books", defaultPath: "C:\\Default", lastScanAt: 1, errors: [], books: [] });
+      }
+      return jsonResponse({ path: "C:\\Books", defaultPath: "C:\\Default", lastScanAt: 1, errors: [] });
+    });
+
+    await fetchLocalWebLibraryFolderStatus(fetchImpl);
+    await saveLocalWebLibraryFolderPath("C:\\Books", fetchImpl);
+    await rescanLocalWebLibraryFolder(fetchImpl);
+    const selected = await selectLocalWebLibraryFolder(fetchImpl);
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "/api/library-folder",
+      "/api/library-folder",
+      "/api/library-folder/rescan",
+      "/api/library-folder/select",
+    ]);
+    expect(calls[1].init?.method).toBe("PUT");
+    expect(calls[2].init?.method).toBe("POST");
+    expect(calls[3].init?.method).toBe("POST");
+    expect(selected.path).toBe("C:\\Books");
   });
 });
 

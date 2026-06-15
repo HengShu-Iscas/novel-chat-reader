@@ -90,7 +90,8 @@ function splitPlainTextChapters(text: string): Chapter[] {
   }
 
   flush();
-  return chapters.filter((chapter) => chapter.title !== "正文" || chapter.text.length > 0);
+  const visibleChapters = chapters.filter((chapter) => chapter.title !== "正文" || chapter.text.length > 0);
+  return visibleChapters.length > 0 ? visibleChapters : [{ id: "ch-1", title: "正文", text: "" }];
 }
 
 function parseManifest(opf: string): Map<string, string> {

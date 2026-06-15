@@ -16,6 +16,19 @@ export type ReaderSnapshot = {
   };
 };
 
+export type LocalLibraryFolderStatus = {
+  path: string | null;
+  defaultPath: string;
+  lastScanAt: number | null;
+  errors: Array<{ fileName: string; message: string }>;
+};
+
+export type LocalLibraryFolderScanResult = LocalLibraryFolderStatus & {
+  books?: NovelSource[];
+  meta?: ReaderLibraryMeta;
+  cancelled?: boolean;
+};
+
 export type PersistableReaderSnapshot = {
   books: NovelSource[];
   meta: ReaderLibraryMeta & {
@@ -101,4 +114,56 @@ export async function fetchLocalWebPendingImports(fetchImpl: FetchLike = fetch):
     name: file.name,
     bytes: new Uint8Array(file.bytes),
   }));
+}
+
+export async function fetchLocalWebLibraryFolderStatus(
+  fetchImpl: FetchLike = fetch,
+): Promise<LocalLibraryFolderStatus> {
+  const response = await fetchImpl("/api/library-folder");
+  if (!response.ok) {
+    throw new Error("Local NovelChat service returned an error while loading the library folder");
+  }
+  return response.json() as Promise<LocalLibraryFolderStatus>;
+}
+
+export async function saveLocalWebLibraryFolderPath(
+  folderPath: string | null,
+  fetchImpl: FetchLike = fetch,
+): Promise<LocalLibraryFolderStatus> {
+  const response = await fetchImpl("/api/library-folder", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: folderPath }),
+  });
+  if (!response.ok) {
+    throw new Error("Local NovelChat service returned an error while saving the library folder");
+  }
+  return response.json() as Promise<LocalLibraryFolderStatus>;
+}
+
+export async function selectLocalWebLibraryFolder(
+  fetchImpl: FetchLike = fetch,
+): Promise<LocalLibraryFolderScanResult> {
+  if (typeof window !== "undefined" && window.novelChatDesktop?.selectLibraryFolder) {
+    const selectedPath = await window.novelChatDesktop.selectLibraryFolder();
+    if (!selectedPath) {
+      return { ...(await fetchLocalWebLibraryFolderStatus(fetchImpl)), cancelled: true };
+    }
+    await saveLocalWebLibraryFolderPath(selectedPath, fetchImpl);
+    return rescanLocalWebLibraryFolder(fetchImpl);
+  }
+
+  const response = await fetchImpl("/api/library-folder/select", { method: "POST" });
+  if (!response.ok) {
+    throw new Error("Local NovelChat service returned an error while selecting the library folder");
+  }
+  return response.json() as Promise<LocalLibraryFolderScanResult>;
+}
+
+export async function rescanLocalWebLibraryFolder(fetchImpl: FetchLike = fetch): Promise<LocalLibraryFolderScanResult> {
+  const response = await fetchImpl("/api/library-folder/rescan", { method: "POST" });
+  if (!response.ok) {
+    throw new Error("Local NovelChat service returned an error while rescanning the library folder");
+  }
+  return response.json() as Promise<LocalLibraryFolderScanResult>;
 }

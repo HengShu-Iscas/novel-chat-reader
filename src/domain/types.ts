@@ -4,6 +4,18 @@ export type SkinId = "chatgpt" | "gemini" | "deepseek" | "doubao";
 
 export type BossKeyTarget = SkinId | "random-open-tab";
 
+export type TopicDisguiseTheme =
+  | "work"
+  | "research"
+  | "coding"
+  | "product"
+  | "operations"
+  | "learning"
+  | "finance"
+  | "design"
+  | "meetings"
+  | "daily";
+
 export type DisplayDensity = "compact" | "comfortable" | "spacious";
 
 export type DisplaySettings = {
@@ -43,6 +55,7 @@ export type ReaderSettings = {
   minChunkChars: number;
   maxChunkChars: number;
   interruptionEvery: number;
+  topicDisguiseTheme: TopicDisguiseTheme;
   display: DisplaySettings;
 };
 

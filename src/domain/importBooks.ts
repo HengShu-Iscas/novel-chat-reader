@@ -5,7 +5,7 @@ import type { NovelSource } from "./types";
 export async function buildImportedBooks(files: Iterable<File>, now = Date.now()): Promise<NovelSource[]> {
   const supportedFiles = filterSupportedNovelFiles(files);
 
-  return Promise.all(
+  const results = await Promise.allSettled(
     supportedFiles.map(async (file, index) => {
       const buffer = await file.arrayBuffer();
       const kind = getImportFileKind(file.name);
@@ -18,4 +18,6 @@ export async function buildImportedBooks(files: Iterable<File>, now = Date.now()
       };
     }),
   );
+
+  return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 }

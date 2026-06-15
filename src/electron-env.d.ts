@@ -8,6 +8,7 @@ declare global {
       openFiles(): Promise<DesktopImportFile[]>;
       onOpenFiles(listener: (files: DesktopImportFile[]) => void): () => void;
       saveSettings(settings: ReaderSettings): Promise<void>;
+      selectLibraryFolder(): Promise<string | null>;
       triggerBossKey(): Promise<void>;
     };
   }
