@@ -4,6 +4,36 @@ export type SkinId = "chatgpt" | "gemini" | "deepseek" | "doubao";
 
 export type BossKeyTarget = SkinId | "random-open-tab";
 
+export type TopicDisguiseTheme =
+  | "work"
+  | "research"
+  | "coding"
+  | "product"
+  | "operations"
+  | "learning"
+  | "finance"
+  | "design"
+  | "meetings"
+  | "daily";
+
+export type DisplayDensity = "compact" | "comfortable" | "spacious";
+
+export type DisplaySettings = {
+  fontScale: number;
+  messageWidth: number;
+  density: DisplayDensity;
+  sidebarMode: "full" | "compact";
+  composerPosition: "bottom" | "floating";
+};
+
+export const defaultDisplaySettings: DisplaySettings = {
+  fontScale: 1,
+  messageWidth: 760,
+  density: "comfortable",
+  sidebarMode: "full",
+  composerPosition: "bottom",
+};
+
 export type Chapter = {
   id: string;
   title: string;
@@ -25,6 +55,8 @@ export type ReaderSettings = {
   minChunkChars: number;
   maxChunkChars: number;
   interruptionEvery: number;
+  topicDisguiseTheme: TopicDisguiseTheme;
+  display: DisplaySettings;
 };
 
 export type ReaderState = {

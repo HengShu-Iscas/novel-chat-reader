@@ -1,60 +1,86 @@
 import {
   ArrowDown,
-  ArrowLeft,
-  ArrowRight,
+  ArrowUp,
   Check,
   ChevronLeft,
   ChevronRight,
   Copy,
   Download,
   Ellipsis,
+  FilePlus2,
   Mic,
   MoreHorizontal,
   Paperclip,
   RefreshCw,
-  Send,
+  Share2,
   Settings,
   ThumbsDown,
   ThumbsUp,
   Upload,
-  Wand2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { parseEpub, parseTxt } from "./domain/parsers";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createFileFromDesktopImport } from "./domain/desktopImport";
+import { getDisguisedTopicsForBooks, topicDisguiseThemeLabels } from "./domain/disguiseTopics";
+import { filterSupportedNovelFiles } from "./domain/importSource";
 import { createChapterSegments } from "./domain/segments";
-import {
-  createInitialReaderState,
-  getActiveBook,
-  getActiveChapter,
-  selectBook,
-  selectChapter,
-  stepChapter,
-} from "./domain/readerState";
-import type { ApiProvider, NovelSource, ReaderSettings, SkinId } from "./domain/types";
-import { sampleBooks } from "./data/sampleLibrary";
-import { loadPersistedLibrary, persistLibrary, saveExtensionSettings } from "./storage/libraryDb";
+import { getActiveBook, getActiveChapter } from "./domain/readerState";
+import { createBrowserBossKeyAction } from "./domain/browserBossKey";
+import type { NovelSource, ReaderSettings, SkinId } from "./domain/types";
+import type { RuntimeMode } from "./runtime/runtimeAdapter";
+import { useReadingSession } from "./runtime/useReadingSession";
+import type { LocalLibraryFolderStatus } from "./storage/storageAdapter";
+import { createLayoutStyleVars } from "./ui/skinLayoutTokens";
 import { skinSpecs } from "./ui/skinSpecs";
 
-const providerLabels: Record<ApiProvider, string> = {
-  openai: "OpenAI",
-  gemini: "Gemini",
-  deepseek: "DeepSeek",
-  doubao: "豆包",
+type AnchorRect = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
+type ChapterMenuState = {
+  bookId: string;
+  anchorRect: AnchorRect;
 };
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [reader, setReader] = useState(() => createInitialReaderState(sampleBooks));
-  const [chapterMenuBookId, setChapterMenuBookId] = useState<string | null>(reader.activeBookId);
+  const messageStreamRef = useRef<HTMLElement>(null);
+  const dragDepthRef = useRef(0);
+  const [chapterMenu, setChapterMenu] = useState<ChapterMenuState | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [sessionKeys, setSessionKeys] = useState<Partial<Record<ApiProvider, string>>>({});
   const [draft, setDraft] = useState("");
+  const [draggingImport, setDraggingImport] = useState(false);
+  const {
+    reader,
+    runtime,
+    libraryFolder,
+    importFiles,
+    updateSettings,
+    chooseBook: chooseSessionBook,
+    chooseChapterForBook: chooseSessionChapter,
+    stepActiveChapter,
+    chooseLibraryFolder,
+    useDefaultLibraryFolder,
+    saveLibraryFolderPath,
+    refreshLibraryFolder,
+    clearLibraryFolder,
+  } = useReadingSession();
 
   const activeBook = getActiveBook(reader);
   const activeChapter = getActiveChapter(reader);
+  const chapterMenuBook = chapterMenu ? reader.books.find((book) => book.id === chapterMenu.bookId) ?? null : null;
+  const chapterMenuActiveIndex = chapterMenuBook?.id === reader.activeBookId ? reader.activeChapterIndex : 0;
   const spec = skinSpecs[reader.settings.skin];
+  const layoutStyle = useMemo(
+    () => createLayoutStyleVars(reader.settings.skin, reader.settings.display),
+    [reader.settings.display, reader.settings.skin],
+  );
 
   const segments = useMemo(() => {
     if (!activeBook || !activeChapter) return [];
@@ -68,81 +94,147 @@ export default function App() {
     });
   }, [activeBook, activeChapter, reader.settings.interruptionEvery, reader.settings.maxChunkChars, reader.settings.minChunkChars]);
 
+  const openImportPicker = useCallback(async () => {
+    if (window.novelChatDesktop?.openFiles) {
+      const desktopFiles = await window.novelChatDesktop.openFiles();
+      await importFiles(desktopFiles.map(createFileFromDesktopImport));
+      setChapterMenu(null);
+      return;
+    }
+
+    fileInputRef.current?.click();
+  }, [importFiles]);
+
   useEffect(() => {
-    let cancelled = false;
-    loadPersistedLibrary()
-      .then(({ books, meta }) => {
-        if (cancelled || books.length === 0 || !meta) return;
-        setReader({
-          books,
-          activeBookId: meta.activeBookId,
-          activeChapterIndex: meta.activeChapterIndex,
-          chapterReadOffset: meta.chapterReadOffset,
-          settings: meta.settings,
-        });
-        setChapterMenuBookId(meta.activeBookId);
-      })
-      .catch(() => {
-        // Local persistence should never block the reading surface.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.key.toLowerCase() !== "b") return;
+      event.preventDefault();
+      const action = createBrowserBossKeyAction({
+        target: reader.settings.bossKeyTarget,
+        companionAvailable: false,
       });
-    return () => {
-      cancelled = true;
+      window.location.href = action.type === "companion" ? action.fallbackUrl : action.url;
     };
-  }, []);
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [reader.settings.bossKeyTarget]);
 
   useEffect(() => {
-    persistLibrary(
-      {
-        id: "reader",
-        activeBookId: reader.activeBookId,
-        activeChapterIndex: reader.activeChapterIndex,
-        chapterReadOffset: reader.chapterReadOffset,
-        settings: reader.settings,
-      },
-      reader.books,
-    ).catch(() => undefined);
-    saveExtensionSettings(reader.settings).catch(() => undefined);
-  }, [reader]);
+    if (!chapterMenu) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setChapterMenu(null);
+      }
+    };
 
-  function updateSettings(patch: Partial<ReaderSettings>) {
-    setReader((current) => ({ ...current, settings: { ...current.settings, ...patch } }));
-  }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [chapterMenu]);
 
-  async function importFile(file: File) {
-    const buffer = await file.arrayBuffer();
-    const parsed = file.name.toLowerCase().endsWith(".epub")
-      ? await parseEpub(buffer, file.name)
-      : await parseTxt(buffer, file.name);
-    const book: NovelSource = { ...parsed, id: `${parsed.id}-${Date.now()}`, updatedAt: Date.now() };
-    setReader((current) => createInitialReaderState([book, ...current.books]));
-    setChapterMenuBookId(book.id);
-  }
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        isTextEntryTarget(event.target)
+      ) {
+        return;
+      }
+
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const delta = event.key === "ArrowLeft" ? -1 : 1;
+      const atStart = reader.activeChapterIndex <= 0;
+      const atEnd = !activeBook || reader.activeChapterIndex >= activeBook.chapters.length - 1;
+      if ((delta === -1 && atStart) || (delta === 1 && atEnd)) return;
+
+      event.preventDefault();
+      stepActiveChapter(delta);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeBook, reader.activeChapterIndex, stepActiveChapter]);
+
+  useEffect(() => {
+    messageStreamRef.current?.scrollTo({ top: 0, left: 0 });
+  }, [activeBook?.id, activeChapter?.id]);
 
   function chooseBook(bookId: string) {
-    setReader((current) => selectBook(current, bookId));
-    setChapterMenuBookId(bookId);
+    chooseSessionBook(bookId);
+    setChapterMenu(null);
   }
 
-  function chooseChapter(index: number) {
-    setReader((current) => selectChapter(current, index));
-    setChapterMenuBookId(null);
+  function chooseChapterForBook(bookId: string, index: number) {
+    chooseSessionChapter(bookId, index);
+    setChapterMenu(null);
+  }
+
+  function toggleChapterMenu(bookId: string, anchorElement: HTMLElement) {
+    const rect = anchorElement.getBoundingClientRect();
+    setChapterMenu((current) =>
+      current?.bookId === bookId
+        ? null
+        : {
+            bookId,
+            anchorRect: toAnchorRect(rect),
+          },
+    );
+  }
+
+  function submitComposerDraft() {
+    if (!activeBook || draft.trim().length === 0 || reader.activeChapterIndex >= activeBook.chapters.length - 1) return;
+    stepActiveChapter(1);
+    setDraft("");
   }
 
   return (
-    <div className={`app skin-${reader.settings.skin}`}>
+    <div
+      className={`app skin-${reader.settings.skin}`}
+      style={layoutStyle}
+      onDragEnter={(event) => {
+        if (!hasFileDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        dragDepthRef.current += 1;
+        setDraggingImport(true);
+      }}
+      onDragLeave={() => {
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) {
+          setDraggingImport(false);
+        }
+      }}
+      onDragOver={(event) => {
+        if (!hasFileDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        dragDepthRef.current = 0;
+        setDraggingImport(false);
+        const files = filterSupportedNovelFiles(event.dataTransfer.files);
+        importFiles(files)
+          .then(() => setChapterMenu(null))
+          .catch(() => undefined);
+      }}
+    >
       <Sidebar
         activeBookId={reader.activeBookId}
         books={reader.books}
-        chapterMenuBookId={chapterMenuBookId}
-        onBookMenu={setChapterMenuBookId}
+        chapterMenuBookId={chapterMenu?.bookId ?? null}
+        onBookMenu={toggleChapterMenu}
+        onCloseChapterMenu={() => setChapterMenu(null)}
         onSelectBook={chooseBook}
-        onSelectChapter={chooseChapter}
-        reader={reader}
         spec={spec}
+        topicDisguiseTheme={reader.settings.topicDisguiseTheme}
       />
       <main className="chat-main">
         <TopBar
-          onImport={() => fileInputRef.current?.click()}
+          onImport={() => openImportPicker().catch(() => undefined)}
           moreOpen={moreOpen}
           onMoreOpen={setMoreOpen}
           onSettings={() => {
@@ -152,31 +244,59 @@ export default function App() {
           settings={reader.settings}
           updateSettings={updateSettings}
         />
-        <section className="message-stream" aria-label="conversation">
-          {segments.map((segment) => (
-            <Message key={segment.id} segment={segment} />
-          ))}
+        <section className="message-stream" aria-label="conversation" ref={messageStreamRef}>
+          {activeBook ? (
+            segments.map((segment) => <Message key={segment.id} segment={segment} />)
+          ) : (
+            <EmptyImportState
+              inputPlaceholder={spec.inputPlaceholder}
+              onImport={() => openImportPicker().catch(() => undefined)}
+              skin={reader.settings.skin}
+            />
+          )}
         </section>
-        <Composer
-          activeChapterTitle={activeChapter?.title ?? "正文"}
-          canPrev={reader.activeChapterIndex > 0}
-          canNext={Boolean(activeBook && reader.activeChapterIndex < activeBook.chapters.length - 1)}
-          draft={draft}
-          inputPlaceholder={spec.inputPlaceholder}
-          onDraft={setDraft}
-          onPrev={() => setReader((current) => stepChapter(current, -1))}
-          onNext={() => setReader((current) => stepChapter(current, 1))}
-          skin={reader.settings.skin}
-        />
+        {activeBook && (
+          <Composer
+            canNext={reader.activeChapterIndex < activeBook.chapters.length - 1}
+            draft={draft}
+            inputPlaceholder={spec.inputPlaceholder}
+            onDraft={setDraft}
+            onSubmit={submitComposerDraft}
+            skin={reader.settings.skin}
+          />
+        )}
       </main>
+      {chapterMenu && chapterMenuBook && (
+        <ChapterMenuOverlay
+          activeChapterIndex={chapterMenuActiveIndex}
+          anchorRect={chapterMenu.anchorRect}
+          book={chapterMenuBook}
+          onClose={() => setChapterMenu(null)}
+          onSelectChapter={(index) => chooseChapterForBook(chapterMenuBook.id, index)}
+          onStep={(delta) => chooseChapterForBook(chapterMenuBook.id, chapterMenuActiveIndex + delta)}
+        />
+      )}
       {settingsOpen && (
         <SettingsPanel
-          keys={sessionKeys}
           onClose={() => setSettingsOpen(false)}
-          onKeyChange={(provider, value) => setSessionKeys((current) => ({ ...current, [provider]: value }))}
+          libraryFolder={libraryFolder}
+          onChooseLibraryFolder={() => chooseLibraryFolder().catch(() => undefined)}
+          onClearLibraryFolder={() => clearLibraryFolder().catch(() => undefined)}
           settings={reader.settings}
+          onRefreshLibraryFolder={() => refreshLibraryFolder().catch(() => undefined)}
+          onSaveLibraryFolderPath={(folderPath) => saveLibraryFolderPath(folderPath).catch(() => undefined)}
+          onUseDefaultLibraryFolder={() => useDefaultLibraryFolder().catch(() => undefined)}
+          runtime={runtime}
           updateSettings={updateSettings}
         />
+      )}
+      {draggingImport && (
+        <div className="drop-overlay" aria-live="polite">
+          <div>
+            <Upload size={24} />
+            <span>添加文件</span>
+          </div>
+        </div>
       )}
       <input
         ref={fileInputRef}
@@ -184,32 +304,109 @@ export default function App() {
         type="file"
         accept=".txt,.epub,text/plain,application/epub+zip"
         onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) {
-            importFile(file).catch(() => undefined);
+          const files = filterSupportedNovelFiles(event.target.files ?? []);
+          if (files.length > 0) {
+            importFiles(files)
+              .then(() => setChapterMenu(null))
+              .catch(() => undefined);
           }
           event.currentTarget.value = "";
         }}
+        multiple
       />
     </div>
   );
+}
+
+const doubaoHomeSuggestions = [
+  "整理本周项目风险",
+  "生成会议纪要模板",
+  "分析竞品更新重点",
+  "规划一次技术分享",
+  "把任务拆成待办",
+  "翻译一段材料",
+];
+
+function EmptyImportState(props: { inputPlaceholder: string; onImport(): void; skin: SkinId }) {
+  if (props.skin === "gemini") {
+    return (
+      <div className="empty-import-state empty-gemini-home">
+        <h1>认识 Gemini：你的私人 AI 助理</h1>
+        <button className="empty-prompt-bar" onClick={props.onImport}>
+          <FilePlus2 size={22} />
+          <span>{props.inputPlaceholder}</span>
+          <Mic size={18} />
+        </button>
+      </div>
+    );
+  }
+
+  if (props.skin === "doubao") {
+    return (
+      <div className="empty-import-state empty-doubao-home">
+        <h1>你好，我是豆包</h1>
+        <div className="empty-suggestion-grid">
+          {doubaoHomeSuggestions.map((suggestion) => (
+            <button key={suggestion} onClick={props.onImport}>
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (props.skin === "deepseek") {
+    return (
+      <div className="empty-import-state empty-deepseek-home">
+        <div className="empty-deepseek-logo">deepseek</div>
+        <button className="empty-prompt-bar" onClick={props.onImport}>
+          <FilePlus2 size={21} />
+          <span>{props.inputPlaceholder}</span>
+          <ArrowUp size={18} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="empty-import-state">
+      <button onClick={props.onImport}>
+        <FilePlus2 size={21} />
+        <span>上传文件</span>
+      </button>
+    </div>
+  );
+}
+
+function hasFileDrag(dataTransfer: DataTransfer): boolean {
+  if (dataTransfer.items.length === 0) return dataTransfer.types.includes("Files");
+  return Array.from(dataTransfer.items).some((item) => item.kind === "file");
+}
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || target.isContentEditable;
 }
 
 function Sidebar(props: {
   activeBookId: string | null;
   books: NovelSource[];
   chapterMenuBookId: string | null;
-  onBookMenu(bookId: string | null): void;
+  onBookMenu(bookId: string, anchorElement: HTMLElement): void;
+  onCloseChapterMenu(): void;
   onSelectBook(bookId: string): void;
-  onSelectChapter(index: number): void;
-  reader: ReturnType<typeof createInitialReaderState>;
   spec: typeof skinSpecs[SkinId];
+  topicDisguiseTheme: ReaderSettings["topicDisguiseTheme"];
 }) {
-  const activeBook = props.books.find((book) => book.id === props.activeBookId) ?? null;
-  const menuBook = props.books.find((book) => book.id === props.chapterMenuBookId) ?? activeBook;
+  const disguisedTopics = useMemo(
+    () => getDisguisedTopicsForBooks(props.books, props.topicDisguiseTheme),
+    [props.books, props.topicDisguiseTheme],
+  );
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" onScroll={props.onCloseChapterMenu}>
       <div className="brand-row">
         <div className="brand-mark" aria-hidden="true">
           {props.spec.id === "gemini" ? "✦" : props.spec.id === "doubao" ? "豆" : props.spec.id === "deepseek" ? "d" : "◎"}
@@ -236,31 +433,32 @@ function Sidebar(props: {
       <section className="recent-section">
         <h2>{props.spec.recentLabel}</h2>
         <div className="recent-list">
-          {props.books.map((book) => (
-            <div className="book-row-wrap" key={book.id}>
-              <button
-                className={`book-row ${book.id === props.activeBookId ? "selected" : ""}`}
-                onClick={() => props.onSelectBook(book.id)}
-              >
-                <span>{book.title}</span>
-              </button>
-              <button
-                className="book-menu-button"
-                aria-label={`${book.title} chapters`}
-                onClick={() => props.onBookMenu(props.chapterMenuBookId === book.id ? null : book.id)}
-              >
-                <Ellipsis size={18} />
-              </button>
-              {props.chapterMenuBookId === book.id && menuBook && (
-                <ChapterMenu
-                  activeChapterIndex={book.id === props.activeBookId ? props.reader.activeChapterIndex : 0}
-                  book={menuBook}
-                  onSelectChapter={props.onSelectChapter}
-                  onStep={(delta) => props.onSelectChapter(props.reader.activeChapterIndex + delta)}
-                />
-              )}
-            </div>
-          ))}
+          {props.books.map((book) => {
+            const disguisedTopic = disguisedTopics[book.id] ?? "任务进度同步";
+            return (
+              <div className="book-row-wrap" key={book.id}>
+                <button
+                  className={`book-row ${book.id === props.activeBookId ? "selected" : ""}`}
+                  aria-label={disguisedTopic}
+                  onClick={() => props.onSelectBook(book.id)}
+                >
+                  <span className="book-title-disguise">{disguisedTopic}</span>
+                  <span className="book-title-real">{book.title}</span>
+                </button>
+                <button
+                  className="book-menu-button"
+                  aria-label={`${disguisedTopic} menu`}
+                  aria-expanded={props.chapterMenuBookId === book.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onBookMenu(book.id, event.currentTarget);
+                  }}
+                >
+                  <Ellipsis size={18} />
+                </button>
+              </div>
+            );
+          })}
         </div>
       </section>
       <div className="sidebar-footer">
@@ -272,38 +470,73 @@ function Sidebar(props: {
   );
 }
 
-function ChapterMenu(props: {
+function ChapterMenuOverlay(props: {
   activeChapterIndex: number;
+  anchorRect: AnchorRect;
   book: NovelSource;
+  onClose(): void;
   onSelectChapter(index: number): void;
   onStep(delta: -1 | 1): void;
 }) {
+  const currentChapterRef = useRef<HTMLButtonElement | null>(null);
+  const menuStyle = getChapterMenuStyle(props.anchorRect);
+
+  useEffect(() => {
+    currentChapterRef.current?.scrollIntoView({ block: "nearest" });
+  }, [props.activeChapterIndex, props.book.id]);
+
   return (
-    <div className="chapter-menu" role="menu">
-      <div className="chapter-menu-title">{props.book.title}</div>
-      <div className="chapter-menu-subtitle">当前：{props.book.chapters[props.activeChapterIndex]?.title ?? "正文"}</div>
-      <div className="chapter-menu-actions">
-        <button onClick={() => props.onStep(-1)}>
-          <ChevronLeft size={18} /> 上一章
-        </button>
-        <button onClick={() => props.onStep(1)}>
-          下一章 <ChevronRight size={18} />
-        </button>
-      </div>
-      <div className="chapter-list">
-        {props.book.chapters.map((chapter, index) => (
-          <button
-            className={index === props.activeChapterIndex ? "current" : ""}
-            key={chapter.id}
-            onClick={() => props.onSelectChapter(index)}
-          >
-            <span>{chapter.title}</span>
-            {index === props.activeChapterIndex && <Check size={16} />}
+    <div className="chapter-menu-layer" onMouseDown={props.onClose}>
+      <div className="chapter-menu" role="menu" style={menuStyle} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="chapter-menu-title">{props.book.title}</div>
+        <div className="chapter-menu-subtitle">当前：{props.book.chapters[props.activeChapterIndex]?.title ?? "正文"}</div>
+        <div className="chapter-menu-actions">
+          <button disabled={props.activeChapterIndex <= 0} onClick={() => props.onStep(-1)}>
+            <ChevronLeft size={18} /> 上一章
           </button>
-        ))}
+          <button
+            disabled={props.activeChapterIndex >= props.book.chapters.length - 1}
+            onClick={() => props.onStep(1)}
+          >
+            下一章 <ChevronRight size={18} />
+          </button>
+        </div>
+        <div className="chapter-list">
+          {props.book.chapters.map((chapter, index) => (
+            <button
+              className={index === props.activeChapterIndex ? "current" : ""}
+              key={chapter.id}
+              onClick={() => props.onSelectChapter(index)}
+              ref={index === props.activeChapterIndex ? currentChapterRef : null}
+            >
+              <span>{chapter.title}</span>
+              {index === props.activeChapterIndex && <Check size={16} />}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
+}
+
+function toAnchorRect(rect: DOMRect): AnchorRect {
+  return {
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function getChapterMenuStyle(anchorRect: AnchorRect) {
+  const width = 280;
+  const estimatedHeight = Math.min(440, window.innerHeight - 24);
+  const left = Math.max(12, Math.min(anchorRect.right + 8, window.innerWidth - width - 12));
+  const top = Math.max(12, Math.min(anchorRect.top, window.innerHeight - estimatedHeight - 12));
+
+  return { left, top } as const;
 }
 
 function TopBar(props: {
@@ -318,18 +551,28 @@ function TopBar(props: {
 
   return (
     <header className="topbar">
-      <div className="topbar-title">{title}</div>
+      <div className="topbar-title">
+        <span>{title}</span>
+        {props.settings.skin === "doubao" && <small>内容由豆包 AI 生成，请仔细甄别</small>}
+      </div>
       <div className="topbar-actions">
-        <button className="icon-button" aria-label="download">
-          <Download size={19} />
+        {props.settings.skin === "gemini" && <button className="upgrade-button">登录</button>}
+        {props.settings.skin === "doubao" && (
+          <button className="download-button">
+            <Download size={16} /> 下载电脑版
+          </button>
+        )}
+        <button className="icon-button" aria-label="import novel" onClick={props.onImport}>
+          {props.settings.skin === "deepseek" || props.settings.skin === "doubao" ? <Share2 size={19} /> : <Upload size={19} />}
         </button>
+        {props.settings.skin === "doubao" && <button className="login-button">登录</button>}
         <button className="icon-button" aria-label="more" onClick={() => props.onMoreOpen(!props.moreOpen)}>
           <MoreHorizontal size={22} />
         </button>
         {props.moreOpen && (
           <div className="more-menu">
             <button onClick={props.onImport}>
-              <Upload size={18} /> 导入文件
+              <Upload size={18} /> 添加文件
             </button>
             <div className="menu-split" />
             <div className="menu-label">皮肤</div>
@@ -347,9 +590,6 @@ function TopBar(props: {
                 </button>
               ))}
             </div>
-            <button onClick={() => props.updateSettings({ apiPolishEnabled: !props.settings.apiPolishEnabled })}>
-              <Wand2 size={18} /> API {props.settings.apiPolishEnabled ? "已启用" : "未启用"}
-            </button>
             <button onClick={props.onSettings}>
               <Settings size={18} /> 设置
             </button>
@@ -386,39 +626,46 @@ function Message(props: { segment: { role: "assistant" | "user"; kind: string; t
 }
 
 function Composer(props: {
-  activeChapterTitle: string;
-  canPrev: boolean;
   canNext: boolean;
   draft: string;
   inputPlaceholder: string;
   onDraft(value: string): void;
-  onPrev(): void;
-  onNext(): void;
+  onSubmit(): void;
   skin: SkinId;
 }) {
+  const hasDraft = props.draft.trim().length > 0;
+  const canSend = hasDraft && props.canNext;
+
+  function submit() {
+    if (!canSend) return;
+    props.onSubmit();
+  }
+
   return (
     <div className="composer-shell">
-      <div className="chapter-pill">
-        <button disabled={!props.canPrev} onClick={props.onPrev} aria-label="previous chapter">
-          <ArrowLeft size={15} />
-        </button>
-        <span>{props.activeChapterTitle}</span>
-        <button disabled={!props.canNext} onClick={props.onNext} aria-label="next chapter">
-          <ArrowRight size={15} />
-        </button>
-      </div>
       <div className="composer-box">
         <textarea
           value={props.draft}
           onChange={(event) => props.onDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey) return;
+            event.preventDefault();
+            submit();
+          }}
           placeholder={props.inputPlaceholder}
           rows={2}
         />
         <div className="composer-tools">
           <div className="tool-left">
-            <button>
-              <Paperclip size={21} />
+            <button className="composer-icon-button" aria-label="attach file" type="button">
+              <Paperclip size={20} />
             </button>
+            {props.skin === "deepseek" && (
+              <>
+                <button>深度思考</button>
+                <button>联网搜索</button>
+              </>
+            )}
             {props.skin === "doubao" && (
               <>
                 <button>快速</button>
@@ -427,23 +674,45 @@ function Composer(props: {
               </>
             )}
           </div>
-          <button className="send-button" aria-label="send">
-            {props.skin === "doubao" ? <Mic size={20} /> : <Send size={18} />}
+          <button
+            className={`send-button ${hasDraft ? "" : "voice-button"}`}
+            disabled={hasDraft && !props.canNext}
+            onClick={hasDraft ? submit : undefined}
+            aria-label={hasDraft ? "send message" : "voice input"}
+            type="button"
+          >
+            {hasDraft ? <ArrowUp size={20} /> : <Mic size={20} />}
           </button>
         </div>
       </div>
+      {props.skin === "gemini" && <div className="composer-disclaimer">Gemini can make mistakes.</div>}
       {props.skin === "deepseek" && <ArrowDown className="scroll-cue" size={19} />}
     </div>
   );
 }
 
 function SettingsPanel(props: {
-  keys: Partial<Record<ApiProvider, string>>;
+  libraryFolder: LocalLibraryFolderStatus | null;
   onClose(): void;
-  onKeyChange(provider: ApiProvider, value: string): void;
+  onChooseLibraryFolder(): void;
+  onClearLibraryFolder(): void;
+  onRefreshLibraryFolder(): void;
+  onSaveLibraryFolderPath(folderPath: string): void;
+  onUseDefaultLibraryFolder(): void;
+  runtime: RuntimeMode;
   settings: ReaderSettings;
   updateSettings(patch: Partial<ReaderSettings>): void;
 }) {
+  const [folderDraft, setFolderDraft] = useState(props.libraryFolder?.path ?? props.libraryFolder?.defaultPath ?? "");
+
+  function updateDisplay(patch: Partial<ReaderSettings["display"]>) {
+    props.updateSettings({ display: { ...props.settings.display, ...patch } });
+  }
+
+  useEffect(() => {
+    setFolderDraft(props.libraryFolder?.path ?? props.libraryFolder?.defaultPath ?? "");
+  }, [props.libraryFolder?.defaultPath, props.libraryFolder?.path]);
+
   return (
     <div className="settings-backdrop">
       <section className="settings-panel" aria-label="settings">
@@ -478,19 +747,110 @@ function SettingsPanel(props: {
           />
         </label>
         <div className="settings-group">
-          <span>会话密钥</span>
-          {(["openai", "gemini", "deepseek", "doubao"] as ApiProvider[]).map((provider) => (
-            <label key={provider}>
-              {providerLabels[provider]}
+          <span>高级显示</span>
+          <label>
+            字号
+            <input
+              type="range"
+              min="0.9"
+              max="1.2"
+              step="0.05"
+              value={props.settings.display.fontScale}
+              onChange={(event) => updateDisplay({ fontScale: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            消息宽度
+            <input
+              type="number"
+              min="620"
+              max="980"
+              value={props.settings.display.messageWidth}
+              onChange={(event) => updateDisplay({ messageWidth: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            密度
+            <select
+              value={props.settings.display.density}
+              onChange={(event) => updateDisplay({ density: event.target.value as ReaderSettings["display"]["density"] })}
+            >
+              <option value="compact">紧凑</option>
+              <option value="comfortable">标准</option>
+              <option value="spacious">宽松</option>
+            </select>
+          </label>
+          <label>
+            侧边栏
+            <select
+              value={props.settings.display.sidebarMode}
+              onChange={(event) =>
+                updateDisplay({ sidebarMode: event.target.value as ReaderSettings["display"]["sidebarMode"] })
+              }
+            >
+              <option value="full">完整</option>
+              <option value="compact">窄栏</option>
+            </select>
+          </label>
+          <label>
+            侧栏话题
+            <select
+              value={props.settings.topicDisguiseTheme}
+              onChange={(event) =>
+                props.updateSettings({
+                  topicDisguiseTheme: event.target.value as ReaderSettings["topicDisguiseTheme"],
+                })
+              }
+            >
+              {(Object.keys(topicDisguiseThemeLabels) as ReaderSettings["topicDisguiseTheme"][]).map((theme) => (
+                <option key={theme} value={theme}>
+                  {topicDisguiseThemeLabels[theme]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {props.runtime === "local-web" && (
+          <div className="settings-group">
+            <span>本地目录</span>
+            <label>
+              当前路径
               <input
-                type="password"
-                value={props.keys[provider] ?? ""}
-                onChange={(event) => props.onKeyChange(provider, event.target.value)}
-                placeholder="仅当前会话保存"
+                value={folderDraft}
+                onChange={(event) => setFolderDraft(event.target.value)}
+                placeholder="未启用"
               />
             </label>
-          ))}
-        </div>
+            <div className="settings-actions">
+              <button type="button" onClick={() => props.onSaveLibraryFolderPath(folderDraft)} disabled={!folderDraft.trim()}>
+                保存路径
+              </button>
+              <button type="button" onClick={props.onChooseLibraryFolder}>
+                选择目录
+              </button>
+              <button type="button" onClick={props.onUseDefaultLibraryFolder}>
+                使用默认
+              </button>
+              <button type="button" onClick={props.onRefreshLibraryFolder} disabled={!props.libraryFolder?.path}>
+                重新扫描
+              </button>
+              <button type="button" onClick={props.onClearLibraryFolder} disabled={!props.libraryFolder?.path}>
+                停用
+              </button>
+            </div>
+            {props.libraryFolder?.errors.length ? (
+              <div className="settings-errors" role="status">
+                {props.libraryFolder.errors.slice(0, 3).map((error) => (
+                  <div key={`${error.fileName}:${error.message}`}>
+                    {error.fileName}: {error.message}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="settings-note">只扫描目录顶层的 TXT / EPUB 文件，删除文件后侧栏会同步移除。</div>
+            )}
+          </div>
+        )}
         <div className="settings-note">Alt+B 会切换到当前皮肤对应的公开聊天入口。</div>
       </section>
     </div>

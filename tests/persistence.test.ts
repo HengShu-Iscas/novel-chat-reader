@@ -10,6 +10,14 @@ describe("toPersistedSettings", () => {
       minChunkChars: 180,
       maxChunkChars: 350,
       interruptionEvery: 2,
+      topicDisguiseTheme: "coding",
+      display: {
+        fontScale: 1.05,
+        messageWidth: 820,
+        density: "comfortable",
+        sidebarMode: "full",
+        composerPosition: "bottom",
+      },
       sessionKeys: { deepseek: "secret" },
     });
 
@@ -20,7 +28,28 @@ describe("toPersistedSettings", () => {
       minChunkChars: 180,
       maxChunkChars: 350,
       interruptionEvery: 2,
+      topicDisguiseTheme: "coding",
+      display: {
+        fontScale: 1.05,
+        messageWidth: 820,
+        density: "comfortable",
+        sidebarMode: "full",
+        composerPosition: "bottom",
+      },
     });
     expect(JSON.stringify(settings)).not.toContain("secret");
+  });
+
+  it("defaults older settings to a local disguise topic theme", () => {
+    const settings = toPersistedSettings({
+      skin: "chatgpt",
+      bossKeyTarget: "chatgpt",
+      apiPolishEnabled: false,
+      minChunkChars: 180,
+      maxChunkChars: 350,
+      interruptionEvery: 2,
+    });
+
+    expect(settings.topicDisguiseTheme).toBe("work");
   });
 });

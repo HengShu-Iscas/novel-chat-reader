@@ -27,7 +27,7 @@ export const libraryDb = new NovelChatDb();
 
 export async function loadPersistedLibrary(): Promise<{ books: NovelSource[]; meta: ReaderMeta | null }> {
   const [books, meta] = await Promise.all([libraryDb.books.toArray(), libraryDb.meta.get("reader")]);
-  return { books, meta: meta ?? null };
+  return { books, meta: meta ? { ...meta, settings: toPersistedSettings(meta.settings) } : null };
 }
 
 export async function persistLibrary(meta: ReaderMeta, books: NovelSource[]): Promise<void> {
@@ -38,7 +38,4 @@ export async function persistLibrary(meta: ReaderMeta, books: NovelSource[]): Pr
   });
 }
 
-export async function saveExtensionSettings(settings: ReaderSettings): Promise<void> {
-  if (typeof chrome === "undefined" || !chrome.storage?.local) return;
-  await chrome.storage.local.set({ novelChatSettings: toPersistedSettings(settings) });
-}
+export { savePlatformSettings } from "./platformBridge";

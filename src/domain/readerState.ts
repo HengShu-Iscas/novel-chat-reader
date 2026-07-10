@@ -1,4 +1,4 @@
-import type { NovelSource, ReaderSettings, ReaderState } from "./types";
+import { defaultDisplaySettings, type NovelSource, type ReaderSettings, type ReaderState } from "./types";
 
 export const defaultSettings: ReaderSettings = {
   skin: "chatgpt",
@@ -7,6 +7,8 @@ export const defaultSettings: ReaderSettings = {
   minChunkChars: 180,
   maxChunkChars: 350,
   interruptionEvery: 2,
+  topicDisguiseTheme: "work",
+  display: defaultDisplaySettings,
 };
 
 export function createInitialReaderState(books: NovelSource[]): ReaderState {
@@ -41,6 +43,18 @@ export function selectBook(state: ReaderState, bookId: string): ReaderState {
   };
 }
 
+export function addImportedBooks(state: ReaderState, importedBooks: NovelSource[]): ReaderState {
+  if (importedBooks.length === 0) return state;
+  const books = sortBooksByRecent([...importedBooks, ...state.books]);
+  return {
+    ...state,
+    books,
+    activeBookId: books[0]?.id ?? null,
+    activeChapterIndex: 0,
+    chapterReadOffset: 0,
+  };
+}
+
 export function selectChapter(state: ReaderState, chapterIndex: number): ReaderState {
   const book = getActiveBook(state);
   if (!book) return state;
@@ -55,6 +69,45 @@ export function selectChapter(state: ReaderState, chapterIndex: number): ReaderS
 
 export function stepChapter(state: ReaderState, delta: -1 | 1): ReaderState {
   return selectChapter(state, state.activeChapterIndex + delta);
+}
+
+export function mergeFolderLibrarySnapshot(
+  state: ReaderState,
+  books: NovelSource[],
+  meta: {
+    activeBookId: string | null;
+    activeChapterIndex: number;
+    chapterReadOffset: number;
+  },
+  options: { preserveActiveSelection: boolean },
+): ReaderState {
+  const currentBook = state.activeBookId
+    ? books.find((book) => book.id === state.activeBookId) ?? null
+    : null;
+
+  if (options.preserveActiveSelection && currentBook) {
+    return {
+      ...state,
+      books,
+      activeBookId: currentBook.id,
+      activeChapterIndex: clamp(state.activeChapterIndex, 0, Math.max(0, currentBook.chapters.length - 1)),
+      chapterReadOffset: state.chapterReadOffset,
+    };
+  }
+
+  const fallbackBookId =
+    meta.activeBookId && books.some((book) => book.id === meta.activeBookId)
+      ? meta.activeBookId
+      : books[0]?.id ?? null;
+  const fallbackBook = books.find((book) => book.id === fallbackBookId) ?? null;
+
+  return {
+    ...state,
+    books,
+    activeBookId: fallbackBookId,
+    activeChapterIndex: clamp(meta.activeChapterIndex, 0, Math.max(0, (fallbackBook?.chapters.length ?? 1) - 1)),
+    chapterReadOffset: fallbackBook ? Math.max(0, meta.chapterReadOffset) : 0,
+  };
 }
 
 export function getActiveBook(state: ReaderState): NovelSource | null {
