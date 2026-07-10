@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:e2e": "node scripts/visual-smoke.mjs",
     "visual:smoke": "node scripts/visual-smoke.mjs",
-    "scan:release": "node scripts/release-scan.mjs"
+    "scan:release": "node scripts/release-scan.mjs",
+    "preflight": "npm test && npm run build && npm run test:e2e && npm run desktop:build && npm run scan:release"
   },
   "dependencies": {
     "dexie": "^4.4.3",
@@ -46,6 +47,7 @@
     "files": [
       "dist/**",
       "dist-electron/**",
+      "!dist-electron/**/*.map",
       "package.json",
       "LICENSE",
       "NOTICE.md"

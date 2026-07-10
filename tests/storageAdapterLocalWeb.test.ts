@@ -66,6 +66,24 @@ describe("local-web storage adapter", () => {
     expect(Array.from(imports[0].bytes)).toEqual([1, 2, 3]);
   });
 
+  it("loads base64 pending imports while retaining legacy byte-array compatibility", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        files: [
+          { name: "base64.txt", base64: "AQID" },
+          { name: "legacy.txt", bytes: [4, 5, 6] },
+        ],
+      }),
+    );
+
+    const imports = await fetchLocalWebPendingImports(fetchImpl);
+
+    expect(imports.map((file) => [file.name, Array.from(file.bytes)])).toEqual([
+      ["base64.txt", [1, 2, 3]],
+      ["legacy.txt", [4, 5, 6]],
+    ]);
+  });
+
   it("loads, saves, selects, and rescans the local folder library", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {

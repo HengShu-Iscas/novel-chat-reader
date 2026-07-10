@@ -20,8 +20,7 @@ This is an independent, experimental, non-commercial project. It is not affiliat
 - Novel text is split on natural sentence boundaries; Chinese quoted dialogue prefers breaks after closing quotes.
 - User interruptions come from a varied local template pool to avoid short, repetitive filler.
 - Includes ChatGPT, Gemini, DeepSeek, and Doubao-style skins.
-- Includes 10 built-in disguise topic themes; optional API-generated topics are left as an extension point.
-- API keys remain session-only and are not written to IndexedDB, extension storage, or local service state.
+- Includes 10 built-in disguise topic themes. Network API polish remains a future extension point and has no UI in the current release.
 - `Alt+B` opens the selected public AI site. The companion extension can focus an existing provider tab when available.
 
 ## Download And Run
@@ -147,21 +146,19 @@ npm.cmd run dist:win
 Release checks:
 
 ```powershell
-npm.cmd test
-npm.cmd run build
-npm.cmd run test:e2e
-npm.cmd run desktop:build
-npm.cmd run scan:release
+npm.cmd run preflight
 git diff --check
 ```
+
+Electron main/preload sourcemaps are disabled by default. Set `NOVELCHAT_ELECTRON_SOURCEMAP=1` before `desktop:build` for local debugging; sourcemaps are always excluded from packaged files.
 
 ## Privacy
 
 - Books stay local by default.
 - Extension/static mode uses browser IndexedDB.
 - Windows local-web mode uses local service state. Folder-library books are read by path and use stable path-based IDs for progress cache.
-- Optional API polish is off by default.
-- API keys are session-only and must be re-entered after the session ends.
+- Windows local-web library, import, and settings-write endpoints require a local page session and reject cross-origin access.
+- Network API polish is not enabled and remains a future extension point.
 - Do not commit private novels, screenshots, API keys, or release artifacts to a public repository.
 
 ## Brand And Takedown Notice

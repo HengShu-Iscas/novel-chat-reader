@@ -1,8 +1,9 @@
 import { app, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { DesktopImportFile } from "../src/domain/desktopImport";
 import { resolveDesktopBossKeyUrl } from "../src/domain/desktopBossKey";
+import { assertImportBatchWithinLimits, defaultImportLimits } from "../src/domain/importLimits";
 import { getSupportedNovelPaths } from "../src/domain/importSource";
 import type { ReaderSettings } from "../src/domain/types";
 import { detectLocalServicePortStatus, LOCAL_SERVICE_PORT } from "./localServicePorts";
@@ -11,6 +12,7 @@ import { startLocalWebService, type LocalWebService } from "./localWebService";
 let tray: Tray | null = null;
 let service: LocalWebService | null = null;
 let serviceUrl: string | null = null;
+let serviceSessionCookie: string | null = null;
 let isQuitting = false;
 
 function getLogDir(): string {
@@ -39,12 +41,20 @@ async function openLogLocation(): Promise<void> {
 
 async function readDesktopImportFiles(paths: Iterable<string>): Promise<DesktopImportFile[]> {
   const filePaths = getSupportedNovelPaths(paths);
-  return Promise.all(
+  const fileStats = await Promise.all(
     filePaths.map(async (filePath) => ({
+      filePath,
       name: path.basename(filePath),
-      bytes: new Uint8Array(await readFile(filePath)),
+      size: (await stat(filePath)).size,
     })),
   );
+  assertImportBatchWithinLimits(fileStats, defaultImportLimits);
+
+  const imports: DesktopImportFile[] = [];
+  for (const file of fileStats) {
+    imports.push({ name: file.name, bytes: new Uint8Array(await readFile(file.filePath)) });
+  }
+  return imports;
 }
 
 async function openLocalWebPage(): Promise<void> {
@@ -62,11 +72,15 @@ async function selectLibraryFolderWithDialog(): Promise<string | null> {
 
 async function sendPendingImports(imports: DesktopImportFile[]): Promise<void> {
   if (!serviceUrl || imports.length === 0) return;
-  await fetch(`${serviceUrl}/api/imports`, {
+  assertImportBatchWithinLimits(
+    imports.map((file) => ({ name: file.name, size: file.bytes.byteLength })),
+    defaultImportLimits,
+  );
+  await fetchLocalService("/api/imports", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      files: imports.map((file) => ({ name: file.name, bytes: Array.from(file.bytes) })),
+      files: imports.map((file) => ({ name: file.name, base64: Buffer.from(file.bytes).toString("base64") })),
     }),
   });
 }
@@ -84,11 +98,37 @@ async function triggerBossKey(): Promise<void> {
 
 async function saveSettingsToLocalService(settings: ReaderSettings): Promise<void> {
   if (!serviceUrl) return;
-  await fetch(`${serviceUrl}/api/settings`, {
+  await fetchLocalService("/api/settings", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
   });
+}
+
+async function fetchLocalService(pathname: string, init: RequestInit): Promise<Response> {
+  if (!serviceUrl) throw new Error("Local NovelChat service is unavailable");
+  const cookie = await getLocalServiceSessionCookie();
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", cookie);
+  const response = await fetch(`${serviceUrl}${pathname}`, { ...init, headers });
+  if (!response.ok) {
+    throw new Error(`Local NovelChat service request failed with status ${response.status}`);
+  }
+  return response;
+}
+
+async function getLocalServiceSessionCookie(): Promise<string> {
+  if (serviceSessionCookie) return serviceSessionCookie;
+  if (!serviceUrl) throw new Error("Local NovelChat service is unavailable");
+
+  const response = await fetch(`${serviceUrl}/`, { redirect: "manual" });
+  const setCookie = response.headers.get("set-cookie");
+  const cookie = setCookie?.split(";", 1)[0]?.trim();
+  if (!cookie?.startsWith("novelchat_session=")) {
+    throw new Error("Local NovelChat service did not issue a session cookie");
+  }
+  serviceSessionCookie = cookie;
+  return cookie;
 }
 
 async function getCurrentBossKeyTarget(): Promise<ReaderSettings["bossKeyTarget"]> {
@@ -145,6 +185,7 @@ async function startBrowserFirstRuntime(): Promise<void> {
     const status = await detectLocalServicePortStatus(port);
     if (status === "novel-chat") {
       serviceUrl = `http://127.0.0.1:${port}`;
+      serviceSessionCookie = null;
       return;
     }
     if (status === "occupied") continue;
@@ -158,6 +199,7 @@ async function startBrowserFirstRuntime(): Promise<void> {
         selectLibraryFolder: selectLibraryFolderWithDialog,
       });
       serviceUrl = service.url;
+      serviceSessionCookie = null;
       return;
     } catch (error) {
       if (!isAddressInUse(error)) throw error;

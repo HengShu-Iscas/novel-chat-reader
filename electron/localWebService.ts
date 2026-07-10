@@ -1,8 +1,16 @@
+import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import type { DesktopImportFile } from "../src/domain/desktopImport";
+import {
+  assertImportBatchWithinLimits,
+  defaultImportLimits,
+  ImportLimitError,
+  resolveImportLimits,
+  type ImportLimits,
+} from "../src/domain/importLimits";
 import type { ReaderSettings } from "../src/domain/types";
 import { toPersistedSettings, type SettingsDraft } from "../src/storage/persistence";
 import {
@@ -25,8 +33,20 @@ import {
 
 type JsonImportFile = {
   name: string;
-  bytes: number[];
+  base64?: string;
+  bytes?: number[];
 };
+
+export type LocalWebServiceLimits = ImportLimits & {
+  maxJsonBodyBytes: number;
+};
+
+export const defaultLocalWebServiceLimits: LocalWebServiceLimits = Object.freeze({
+  ...defaultImportLimits,
+  maxJsonBodyBytes: 88 * 1024 * 1024,
+});
+
+const SESSION_COOKIE_NAME = "novelchat_session";
 
 type ScanContext = {
   scanLibraryFolder: typeof scanLibraryFolderDefault;
@@ -40,6 +60,7 @@ export type StartLocalWebServiceOptions = {
   openBrowser?: false | ((url: string) => void | Promise<void>);
   selectLibraryFolder?: false | (() => Promise<string | null>);
   scanLibraryFolder?: typeof scanLibraryFolderDefault;
+  limits?: Partial<LocalWebServiceLimits>;
 };
 
 export type LocalWebService = {
@@ -50,6 +71,12 @@ export type LocalWebService = {
 
 export async function startLocalWebService(options: StartLocalWebServiceOptions): Promise<LocalWebService> {
   await mkdir(options.userDataDir, { recursive: true });
+  const importLimits = resolveImportLimits(options.limits);
+  const limits: LocalWebServiceLimits = {
+    ...importLimits,
+    maxJsonBodyBytes: options.limits?.maxJsonBodyBytes ?? defaultLocalWebServiceLimits.maxJsonBodyBytes,
+  };
+  const sessionToken = randomBytes(32).toString("base64url");
   const scanContext: ScanContext = {
     scanLibraryFolder: options.scanLibraryFolder ?? scanLibraryFolderDefault,
     scanCacheRef: { current: {} },
@@ -73,16 +100,36 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
 
   const server = http.createServer(async (request, response) => {
     try {
-      applyCors(response);
-      if (request.method === "OPTIONS") {
-        response.writeHead(204);
-        response.end();
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const method = request.method ?? "GET";
+      const publicEndpoint = isPublicEndpoint(url.pathname, method);
+
+      if (!isAllowedLocalHost(request.headers.host, getServerPort(server))) {
+        writeJson(response, 403, { error: "Local service Host header is forbidden" });
         return;
       }
 
-      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (publicEndpoint) applyPublicCors(response);
+      if (method === "OPTIONS") {
+        if (isPublicPreflight(url.pathname, request)) {
+          applyPublicCors(response);
+          response.writeHead(204, { "Access-Control-Allow-Methods": "GET" });
+          response.end();
+          return;
+        }
+        writeJson(response, 403, { error: "Cross-origin local service access is forbidden" });
+        return;
+      }
 
-      if (url.pathname === "/health") {
+      if (url.pathname.startsWith("/api/") && !publicEndpoint) {
+        const authorizationError = authorizeProtectedRequest(request, sessionToken, getServerPort(server));
+        if (authorizationError) {
+          writeJson(response, authorizationError.statusCode, { error: authorizationError.message });
+          return;
+        }
+      }
+
+      if (url.pathname === "/health" && method === "GET") {
         writeJson(response, 200, { name: "novel-chat-reader", mode: "local-web" });
         return;
       }
@@ -98,7 +145,7 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
 
       if (url.pathname === "/api/library" && request.method === "PUT") {
         await withStateQueue(async () => {
-          const body = (await readJson(request)) as Parameters<typeof withLocalLibrary>[1];
+          const body = (await readJson(request, limits.maxJsonBodyBytes)) as Parameters<typeof withLocalLibrary>[1];
           state = withLocalLibrary(state, body);
           await writeLocalServiceState(options.userDataDir, state);
         });
@@ -114,7 +161,7 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
 
       if (url.pathname === "/api/library-folder" && request.method === "PUT") {
         const status = await withStateQueue(async () => {
-          const body = (await readJson(request)) as { path?: string | null };
+          const body = (await readJson(request, limits.maxJsonBodyBytes)) as { path?: string | null };
           state = await setLibraryFolderPath(options.userDataDir, state, body.path ?? null, scanContext);
           return getLibraryFolderStatus(state);
         });
@@ -157,7 +204,7 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
 
       if (url.pathname === "/api/settings" && request.method === "PUT") {
         await withStateQueue(async () => {
-          const body = (await readJson(request)) as ReaderSettings;
+          const body = (await readJson(request, limits.maxJsonBodyBytes)) as ReaderSettings;
           state = withLocalSettings(state, body);
           await writeLocalServiceState(options.userDataDir, state);
         });
@@ -167,8 +214,9 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
 
       if (url.pathname === "/api/imports" && request.method === "POST") {
         await withStateQueue(async () => {
-          const body = (await readJson(request)) as { files?: JsonImportFile[] };
-          state = enqueuePendingImports(state, (body.files ?? []).map(importFromJson));
+          const body = (await readJson(request, limits.maxJsonBodyBytes)) as { files?: JsonImportFile[] };
+          const imports = parseJsonImportBatch(body.files ?? [], limits);
+          state = enqueuePendingImports(state, imports);
           await writeLocalServiceState(options.userDataDir, state);
         });
         writeJson(response, 200, { ok: true });
@@ -186,9 +234,13 @@ export async function startLocalWebService(options: StartLocalWebServiceOptions)
         return;
       }
 
+      if (method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+        setSessionCookie(response, sessionToken);
+      }
       await serveStatic(options.staticDir, url.pathname, response);
     } catch (error) {
-      writeJson(response, 500, { error: error instanceof Error ? error.message : "Unknown local service error" });
+      const statusCode = error instanceof HttpError ? error.statusCode : error instanceof ImportLimitError ? 413 : 500;
+      writeJson(response, statusCode, { error: error instanceof Error ? error.message : "Unknown local service error" });
     }
   });
 
@@ -232,6 +284,12 @@ async function readLocalServiceState(userDataDir: string): Promise<LocalServiceS
       };
     };
     const base = createLocalServiceState();
+    let pendingImports: DesktopImportFile[] = [];
+    try {
+      pendingImports = parseJsonImportBatch(parsed.pendingImports ?? [], defaultImportLimits);
+    } catch {
+      pendingImports = [];
+    }
     return {
       ...base,
       ...parsed,
@@ -241,7 +299,7 @@ async function readLocalServiceState(userDataDir: string): Promise<LocalServiceS
         ...parsed.meta,
         settings: parsed.meta?.settings ? toPersistedSettings(parsed.meta.settings) : base.meta.settings,
       },
-      pendingImports: (parsed.pendingImports ?? []).map(importFromJson),
+      pendingImports,
       bookProgressById: parsed.bookProgressById ?? base.bookProgressById,
       libraryFolder: {
         ...base.libraryFolder,
@@ -278,11 +336,53 @@ function getStatePath(userDataDir: string): string {
 }
 
 function importToJson(importFile: DesktopImportFile): JsonImportFile {
-  return { name: importFile.name, bytes: Array.from(importFile.bytes) };
+  return { name: importFile.name, base64: Buffer.from(importFile.bytes).toString("base64") };
 }
 
 function importFromJson(importFile: JsonImportFile): DesktopImportFile {
-  return { name: importFile.name, bytes: new Uint8Array(importFile.bytes) };
+  if (!importFile || typeof importFile.name !== "string" || !importFile.name.trim()) {
+    throw new HttpError(400, "Import file name is required");
+  }
+
+  if (typeof importFile.base64 === "string") {
+    return { name: importFile.name, bytes: decodeBase64(importFile.base64) };
+  }
+
+  if (Array.isArray(importFile.bytes) && importFile.bytes.every(isByte)) {
+    return { name: importFile.name, bytes: new Uint8Array(importFile.bytes) };
+  }
+
+  throw new HttpError(400, `Import payload is missing for ${importFile.name}`);
+}
+
+function parseJsonImportBatch(files: unknown, limits: ImportLimits): DesktopImportFile[] {
+  if (!Array.isArray(files)) {
+    throw new HttpError(400, "Import files must be an array");
+  }
+
+  const imports = files.map((file) => importFromJson(file as JsonImportFile));
+  assertImportBatchWithinLimits(
+    imports.map((file) => ({ name: file.name, size: file.bytes.byteLength })),
+    limits,
+  );
+  return imports;
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const normalized = value.replace(/=+$/, "");
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) {
+    throw new HttpError(400, "Import payload is not valid base64");
+  }
+
+  const buffer = Buffer.from(value, "base64");
+  if (buffer.toString("base64").replace(/=+$/, "") !== normalized) {
+    throw new HttpError(400, "Import payload is not valid base64");
+  }
+  return new Uint8Array(buffer);
+}
+
+function isByte(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 255;
 }
 
 async function setLibraryFolderPath(
@@ -383,17 +483,35 @@ function sameScanErrors(left: LibraryFolderScanError[], right: LibraryFolderScan
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-async function readJson(request: http.IncomingMessage): Promise<unknown> {
+async function readJson(request: http.IncomingMessage, maxBytes: number): Promise<unknown> {
+  const contentLength = Number(request.headers["content-length"] ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    request.resume();
+    throw new HttpError(413, `JSON request body exceeds the ${maxBytes}-byte limit`);
+  }
+
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > maxBytes) {
+      request.resume();
+      throw new HttpError(413, `JSON request body exceeds the ${maxBytes}-byte limit`);
+    }
+    chunks.push(buffer);
   }
   const body = Buffer.concat(chunks).toString("utf8");
-  return body ? JSON.parse(body) : {};
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch {
+    throw new HttpError(400, "JSON request body is invalid");
+  }
 }
 
 function writeJson(response: http.ServerResponse, statusCode: number, body: unknown): void {
   response.writeHead(statusCode, {
+    "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(body));
@@ -448,8 +566,91 @@ export function isPathInsideDirectory(filePath: string, directoryPath: string): 
   return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
-function applyCors(response: http.ServerResponse): void {
+function applyPublicCors(response: http.ServerResponse): void {
   response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function isPublicEndpoint(pathname: string, method: string): boolean {
+  return method === "GET" && (pathname === "/health" || pathname === "/api/settings");
+}
+
+function isPublicPreflight(pathname: string, request: http.IncomingMessage): boolean {
+  const requestedMethod = request.headers["access-control-request-method"];
+  return requestedMethod === "GET" && (pathname === "/health" || pathname === "/api/settings");
+}
+
+function authorizeProtectedRequest(
+  request: http.IncomingMessage,
+  sessionToken: string,
+  serverPort: number,
+): { statusCode: 401 | 403; message: string } | null {
+  const origin = request.headers.origin;
+  if (origin && !isAllowedLocalOrigin(origin, serverPort)) {
+    return { statusCode: 403, message: "Cross-origin local service access is forbidden" };
+  }
+
+  if (readCookie(request.headers.cookie, SESSION_COOKIE_NAME) !== sessionToken) {
+    return { statusCode: 401, message: "Local service session is required" };
+  }
+  return null;
+}
+
+function isAllowedLocalOrigin(origin: string, serverPort: number): boolean {
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname.toLowerCase();
+    return (
+      url.protocol === "http:" &&
+      (hostname === "127.0.0.1" || hostname === "localhost") &&
+      Number(url.port) === serverPort
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedLocalHost(host: string | undefined, serverPort: number): boolean {
+  if (!host) return false;
+  try {
+    const url = new URL(`http://${host}`);
+    const hostname = url.hostname.toLowerCase();
+    return (
+      (hostname === "127.0.0.1" || hostname === "localhost") &&
+      Number(url.port) === serverPort
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readCookie(header: string | undefined, name: string): string | null {
+  for (const part of header?.split(";") ?? []) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
+  }
+  return null;
+}
+
+function setSessionCookie(response: http.ServerResponse, sessionToken: string): void {
+  response.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE_NAME}=${sessionToken}; Path=/; HttpOnly; SameSite=Strict`,
+  );
+  response.setHeader("Cache-Control", "no-store");
+}
+
+function getServerPort(server: http.Server): number {
+  const address = server.address();
+  return address && typeof address !== "string" ? address.port : 0;
+}
+
+class HttpError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
 }

@@ -4,6 +4,7 @@ import path from "node:path";
 import { strToU8, zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeFolderBookId, scanLibraryFolder } from "../electron/libraryFolder";
+import { resolveImportLimits } from "../src/domain/importLimits";
 
 let tempDir: string | null = null;
 
@@ -87,6 +88,24 @@ describe("folder library scanner", () => {
     expect(result.books.map((book) => book.title)).toEqual(["valid"]);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].fileName).toBe("broken.epub");
+  });
+
+  it("reports oversized books without blocking other files", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-folder-"));
+    await writeFile(path.join(tempDir, "valid.txt"), "ok", "utf8");
+    await writeFile(path.join(tempDir, "large.txt"), "too large", "utf8");
+
+    const result = await scanLibraryFolder(
+      tempDir,
+      Date.now(),
+      {},
+      resolveImportLimits({ maxFileBytes: 4 }),
+    );
+
+    expect(result.books.map((book) => book.title)).toEqual(["valid"]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatchObject({ fileName: "large.txt" });
+    expect(result.errors[0].message).toContain("per-file import limit");
   });
 });
 

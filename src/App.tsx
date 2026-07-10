@@ -17,48 +17,21 @@ import {
   ThumbsDown,
   ThumbsUp,
   Upload,
-  Wand2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileFromDesktopImport } from "./domain/desktopImport";
 import { getDisguisedTopicsForBooks, topicDisguiseThemeLabels } from "./domain/disguiseTopics";
-import { buildImportedBooks } from "./domain/importBooks";
 import { filterSupportedNovelFiles } from "./domain/importSource";
 import { createChapterSegments } from "./domain/segments";
-import {
-  createInitialReaderState,
-  addImportedBooks,
-  getActiveBook,
-  getActiveChapter,
-  mergeFolderLibrarySnapshot,
-  selectBook,
-  selectChapter,
-  stepChapter,
-} from "./domain/readerState";
+import { getActiveBook, getActiveChapter } from "./domain/readerState";
 import { createBrowserBossKeyAction } from "./domain/browserBossKey";
-import type { ApiProvider, NovelSource, ReaderSettings, SkinId } from "./domain/types";
-import { loadPersistedLibrary, persistLibrary, savePlatformSettings } from "./storage/libraryDb";
-import {
-  createLocalWebStorageAdapter,
-  fetchLocalWebLibraryFolderStatus,
-  fetchLocalWebPendingImports,
-  rescanLocalWebLibraryFolder,
-  saveLocalWebLibraryFolderPath,
-  selectLocalWebLibraryFolder,
-  type LocalLibraryFolderScanResult,
-  type LocalLibraryFolderStatus,
-} from "./storage/storageAdapter";
-import { getCurrentRuntime, type RuntimeMode } from "./runtime/runtimeAdapter";
+import type { NovelSource, ReaderSettings, SkinId } from "./domain/types";
+import type { RuntimeMode } from "./runtime/runtimeAdapter";
+import { useReadingSession } from "./runtime/useReadingSession";
+import type { LocalLibraryFolderStatus } from "./storage/storageAdapter";
 import { createLayoutStyleVars } from "./ui/skinLayoutTokens";
 import { skinSpecs } from "./ui/skinSpecs";
-
-const providerLabels: Record<ApiProvider, string> = {
-  openai: "OpenAI",
-  gemini: "Gemini",
-  deepseek: "DeepSeek",
-  doubao: "豆包",
-};
 
 type AnchorRect = {
   top: number;
@@ -78,24 +51,32 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageStreamRef = useRef<HTMLElement>(null);
   const dragDepthRef = useRef(0);
-  const persistQueueRef = useRef(Promise.resolve());
-  const [reader, setReader] = useState(() => createInitialReaderState([]));
   const [chapterMenu, setChapterMenu] = useState<ChapterMenuState | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [sessionKeys, setSessionKeys] = useState<Partial<Record<ApiProvider, string>>>({});
   const [draft, setDraft] = useState("");
   const [draggingImport, setDraggingImport] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
-  const [libraryFolder, setLibraryFolder] = useState<LocalLibraryFolderStatus | null>(null);
+  const {
+    reader,
+    runtime,
+    libraryFolder,
+    importFiles,
+    updateSettings,
+    chooseBook: chooseSessionBook,
+    chooseChapterForBook: chooseSessionChapter,
+    stepActiveChapter,
+    chooseLibraryFolder,
+    useDefaultLibraryFolder,
+    saveLibraryFolderPath,
+    refreshLibraryFolder,
+    clearLibraryFolder,
+  } = useReadingSession();
 
   const activeBook = getActiveBook(reader);
   const activeChapter = getActiveChapter(reader);
   const chapterMenuBook = chapterMenu ? reader.books.find((book) => book.id === chapterMenu.bookId) ?? null : null;
   const chapterMenuActiveIndex = chapterMenuBook?.id === reader.activeBookId ? reader.activeChapterIndex : 0;
   const spec = skinSpecs[reader.settings.skin];
-  const runtime = useMemo(() => getCurrentRuntime(), []);
-  const localWebStorage = useMemo(() => (runtime === "local-web" ? createLocalWebStorageAdapter() : null), [runtime]);
   const layoutStyle = useMemo(
     () => createLayoutStyleVars(reader.settings.skin, reader.settings.display),
     [reader.settings.display, reader.settings.skin],
@@ -113,154 +94,16 @@ export default function App() {
     });
   }, [activeBook, activeChapter, reader.settings.interruptionEvery, reader.settings.maxChunkChars, reader.settings.minChunkChars]);
 
-  const importFiles = useCallback(async (files: Iterable<File>) => {
-    const importedBooks = await buildImportedBooks(files);
-    if (importedBooks.length === 0) return;
-
-    setReader((current) => addImportedBooks(current, importedBooks));
-    setChapterMenu(null);
-  }, []);
-
   const openImportPicker = useCallback(async () => {
     if (window.novelChatDesktop?.openFiles) {
       const desktopFiles = await window.novelChatDesktop.openFiles();
       await importFiles(desktopFiles.map(createFileFromDesktopImport));
+      setChapterMenu(null);
       return;
     }
 
     fileInputRef.current?.click();
   }, [importFiles]);
-
-  const applyLocalWebLibraryFolderResult = useCallback((result: LocalLibraryFolderScanResult, options = { preserveActiveSelection: false }) => {
-    setLibraryFolder({
-      path: result.path,
-      defaultPath: result.defaultPath,
-      lastScanAt: result.lastScanAt,
-      errors: result.errors,
-    });
-
-    if (!result.books || !result.meta) return;
-    setReader((current) =>
-      mergeFolderLibrarySnapshot(current, result.books ?? current.books, result.meta!, options),
-    );
-    setChapterMenu(null);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadLibrary() {
-      try {
-        if (localWebStorage) {
-          const [snapshot, folderStatus] = await Promise.all([
-            localWebStorage.load(),
-            fetchLocalWebLibraryFolderStatus(),
-          ]);
-          if (cancelled || !snapshot) return;
-          setLibraryFolder(folderStatus);
-          setReader({
-            books: snapshot.books,
-            activeBookId: snapshot.meta.activeBookId,
-            activeChapterIndex: snapshot.meta.activeChapterIndex,
-            chapterReadOffset: snapshot.meta.chapterReadOffset,
-            settings: snapshot.meta.settings,
-          });
-          setChapterMenu(null);
-          return;
-        }
-
-        const { books, meta } = await loadPersistedLibrary();
-        if (cancelled || books.length === 0 || !meta) return;
-        setReader({
-          books,
-          activeBookId: meta.activeBookId,
-          activeChapterIndex: meta.activeChapterIndex,
-          chapterReadOffset: meta.chapterReadOffset,
-          settings: meta.settings,
-        });
-        setChapterMenu(null);
-      } catch {
-        // Local persistence should never block the reading surface.
-      } finally {
-        if (!cancelled) setHydrated(true);
-      }
-    }
-
-    loadLibrary().catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [localWebStorage]);
-
-  useEffect(() => {
-    if (runtime === "local-web") return undefined;
-    return window.novelChatDesktop?.onOpenFiles((desktopFiles) => {
-      importFiles(desktopFiles.map(createFileFromDesktopImport)).catch(() => undefined);
-    });
-  }, [importFiles, runtime]);
-
-  useEffect(() => {
-    if (!hydrated || runtime !== "local-web") return undefined;
-
-    let disposed = false;
-    const pullPendingImports = async () => {
-      const imports = await fetchLocalWebPendingImports();
-      if (disposed || imports.length === 0) return;
-      await importFiles(imports.map(createFileFromDesktopImport));
-    };
-
-    pullPendingImports().catch(() => undefined);
-    const timer = window.setInterval(() => {
-      pullPendingImports().catch(() => undefined);
-    }, 1800);
-
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [hydrated, importFiles, runtime]);
-
-  useEffect(() => {
-    if (!hydrated || runtime !== "local-web" || !libraryFolder?.path) return undefined;
-
-    let disposed = false;
-    const pullFolderLibrary = async () => {
-      const result = await rescanLocalWebLibraryFolder();
-      if (disposed) return;
-      applyLocalWebLibraryFolderResult(result, { preserveActiveSelection: true });
-    };
-
-    const timer = window.setInterval(() => {
-      pullFolderLibrary().catch(() => undefined);
-    }, 5000);
-
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [applyLocalWebLibraryFolderResult, hydrated, libraryFolder?.path, runtime]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-
-    const meta = {
-      activeBookId: reader.activeBookId,
-      activeChapterIndex: reader.activeChapterIndex,
-      chapterReadOffset: reader.chapterReadOffset,
-      settings: reader.settings,
-    };
-
-    if (localWebStorage) {
-      persistQueueRef.current = persistQueueRef.current
-        .catch(() => undefined)
-        .then(() => localWebStorage.persist({ books: reader.books, meta }))
-        .catch(() => undefined);
-      return;
-    }
-
-    persistLibrary({ id: "reader", ...meta }, reader.books).catch(() => undefined);
-    savePlatformSettings(reader.settings).catch(() => undefined);
-  }, [hydrated, localWebStorage, reader]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -309,31 +152,24 @@ export default function App() {
       if ((delta === -1 && atStart) || (delta === 1 && atEnd)) return;
 
       event.preventDefault();
-      setReader((current) => stepChapter(current, delta));
+      stepActiveChapter(delta);
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeBook, reader.activeChapterIndex]);
+  }, [activeBook, reader.activeChapterIndex, stepActiveChapter]);
 
   useEffect(() => {
     messageStreamRef.current?.scrollTo({ top: 0, left: 0 });
   }, [activeBook?.id, activeChapter?.id]);
 
-  function updateSettings(patch: Partial<ReaderSettings>) {
-    setReader((current) => ({ ...current, settings: { ...current.settings, ...patch } }));
-  }
-
   function chooseBook(bookId: string) {
-    setReader((current) => selectBook(current, bookId));
+    chooseSessionBook(bookId);
     setChapterMenu(null);
   }
 
   function chooseChapterForBook(bookId: string, index: number) {
-    setReader((current) => {
-      const state = current.activeBookId === bookId ? current : selectBook(current, bookId);
-      return selectChapter(state, index);
-    });
+    chooseSessionChapter(bookId, index);
     setChapterMenu(null);
   }
 
@@ -351,42 +187,8 @@ export default function App() {
 
   function submitComposerDraft() {
     if (!activeBook || draft.trim().length === 0 || reader.activeChapterIndex >= activeBook.chapters.length - 1) return;
-    setReader((current) => stepChapter(current, 1));
+    stepActiveChapter(1);
     setDraft("");
-  }
-
-  async function chooseLibraryFolder() {
-    if (runtime !== "local-web") return;
-    const result = await selectLocalWebLibraryFolder();
-    if (!result.cancelled) {
-      applyLocalWebLibraryFolderResult(result);
-    }
-  }
-
-  async function useDefaultLibraryFolder() {
-    if (runtime !== "local-web" || !libraryFolder?.defaultPath) return;
-    const status = await saveLocalWebLibraryFolderPath(libraryFolder.defaultPath);
-    setLibraryFolder(status);
-    applyLocalWebLibraryFolderResult(await rescanLocalWebLibraryFolder());
-  }
-
-  async function saveLibraryFolderPath(folderPath: string) {
-    if (runtime !== "local-web") return;
-    const trimmed = folderPath.trim();
-    if (!trimmed) return;
-    const status = await saveLocalWebLibraryFolderPath(trimmed);
-    setLibraryFolder(status);
-    applyLocalWebLibraryFolderResult(await rescanLocalWebLibraryFolder());
-  }
-
-  async function refreshLibraryFolder() {
-    if (runtime !== "local-web" || !libraryFolder?.path) return;
-    applyLocalWebLibraryFolderResult(await rescanLocalWebLibraryFolder());
-  }
-
-  async function clearLibraryFolder() {
-    if (runtime !== "local-web") return;
-    setLibraryFolder(await saveLocalWebLibraryFolderPath(null));
   }
 
   return (
@@ -415,7 +217,9 @@ export default function App() {
         dragDepthRef.current = 0;
         setDraggingImport(false);
         const files = filterSupportedNovelFiles(event.dataTransfer.files);
-        importFiles(files).catch(() => undefined);
+        importFiles(files)
+          .then(() => setChapterMenu(null))
+          .catch(() => undefined);
       }}
     >
       <Sidebar
@@ -474,9 +278,7 @@ export default function App() {
       )}
       {settingsOpen && (
         <SettingsPanel
-          keys={sessionKeys}
           onClose={() => setSettingsOpen(false)}
-          onKeyChange={(provider, value) => setSessionKeys((current) => ({ ...current, [provider]: value }))}
           libraryFolder={libraryFolder}
           onChooseLibraryFolder={() => chooseLibraryFolder().catch(() => undefined)}
           onClearLibraryFolder={() => clearLibraryFolder().catch(() => undefined)}
@@ -504,7 +306,9 @@ export default function App() {
         onChange={(event) => {
           const files = filterSupportedNovelFiles(event.target.files ?? []);
           if (files.length > 0) {
-            importFiles(files).catch(() => undefined);
+            importFiles(files)
+              .then(() => setChapterMenu(null))
+              .catch(() => undefined);
           }
           event.currentTarget.value = "";
         }}
@@ -786,9 +590,6 @@ function TopBar(props: {
                 </button>
               ))}
             </div>
-            <button onClick={() => props.updateSettings({ apiPolishEnabled: !props.settings.apiPolishEnabled })}>
-              <Wand2 size={18} /> API {props.settings.apiPolishEnabled ? "已启用" : "未启用"}
-            </button>
             <button onClick={props.onSettings}>
               <Settings size={18} /> 设置
             </button>
@@ -891,12 +692,10 @@ function Composer(props: {
 }
 
 function SettingsPanel(props: {
-  keys: Partial<Record<ApiProvider, string>>;
   libraryFolder: LocalLibraryFolderStatus | null;
   onClose(): void;
   onChooseLibraryFolder(): void;
   onClearLibraryFolder(): void;
-  onKeyChange(provider: ApiProvider, value: string): void;
   onRefreshLibraryFolder(): void;
   onSaveLibraryFolderPath(folderPath: string): void;
   onUseDefaultLibraryFolder(): void;
@@ -1052,20 +851,6 @@ function SettingsPanel(props: {
             )}
           </div>
         )}
-        <div className="settings-group">
-          <span>会话密钥</span>
-          {(["openai", "gemini", "deepseek", "doubao"] as ApiProvider[]).map((provider) => (
-            <label key={provider}>
-              {providerLabels[provider]}
-              <input
-                type="password"
-                value={props.keys[provider] ?? ""}
-                onChange={(event) => props.onKeyChange(provider, event.target.value)}
-                placeholder="仅当前会话保存"
-              />
-            </label>
-          ))}
-        </div>
         <div className="settings-note">Alt+B 会切换到当前皮肤对应的公开聊天入口。</div>
       </section>
     </div>

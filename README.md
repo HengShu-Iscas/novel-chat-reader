@@ -20,8 +20,7 @@ NovelChat Reader 是一个本地优先的开源阅读工具，用网页中的 AI
 - 小说正文按自然句末断句，中文引号对话会优先在下引号后断开。
 - 用户插话使用本地模板池生成，避免过短、重复或机械。
 - 支持 ChatGPT、Gemini、DeepSeek、豆包四套视觉皮肤。
-- 支持 10 类内置伪装话题主题；可选 API 生成入口保留为后续扩展。
-- API key 只保存在当前会话状态中，不写入 IndexedDB、扩展存储或本地服务状态。
+- 支持 10 类内置伪装话题主题；网络 API polish 仅作为未来扩展点，当前界面不提供入口。
 - `Alt+B` 老板键会跳转到当前皮肤对应的公开 AI 站点；配套扩展可优先聚焦已有标签页。
 
 ## 下载与运行
@@ -147,21 +146,19 @@ npm.cmd run dist:win
 发布前检查：
 
 ```powershell
-npm.cmd test
-npm.cmd run build
-npm.cmd run test:e2e
-npm.cmd run desktop:build
-npm.cmd run scan:release
+npm.cmd run preflight
 git diff --check
 ```
+
+Electron 主进程与预加载脚本默认不生成 sourcemap。如需本地调试，可先设置 `NOVELCHAT_ELECTRON_SOURCEMAP=1` 再运行 `desktop:build`；sourcemap 始终从安装包文件列表中排除。
 
 ## 隐私
 
 - 所有书籍默认只保存在本机。
 - 扩展/静态模式使用浏览器 IndexedDB。
 - Windows local-web 模式使用本地服务状态；文件夹书库按路径读取本地文件，并用稳定路径 ID 保存进度缓存。
-- 可选 API polish 默认关闭。
-- API key 只保存在当前会话内，刷新或会话结束后需要重新输入。
+- Windows local-web 的书库、导入和设置写入接口需要本地页面会话，并拒绝跨来源访问。
+- 网络 API polish 尚未启用，仅保留为未来扩展点。
 - 不要把私有小说、截图、API key 或发行产物提交到公开仓库。
 
 ## 品牌与下架声明

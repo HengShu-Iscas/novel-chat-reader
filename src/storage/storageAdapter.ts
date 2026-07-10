@@ -84,7 +84,7 @@ export function createLocalWebStorageAdapter(
         },
       });
 
-      await Promise.all([
+      const responses = await Promise.all([
         fetchImpl("/api/library", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -96,6 +96,9 @@ export function createLocalWebStorageAdapter(
           body: JSON.stringify(settings),
         }),
       ]);
+      if (responses.some((response) => !response.ok)) {
+        throw new Error("Local NovelChat service returned an error while saving state");
+      }
     },
   };
 }
@@ -109,11 +112,21 @@ export async function fetchLocalWebPendingImports(fetchImpl: FetchLike = fetch):
   if (!response.ok) {
     throw new Error("Local NovelChat service returned an error while loading pending imports");
   }
-  const body = (await response.json()) as { files?: Array<{ name: string; bytes: number[] }> };
-  return (body.files ?? []).map((file) => ({
-    name: file.name,
-    bytes: new Uint8Array(file.bytes),
-  }));
+  const body = (await response.json()) as {
+    files?: Array<{ name: string; base64?: string; bytes?: number[] }>;
+  };
+  return (body.files ?? []).map((file) => ({ name: file.name, bytes: decodeImportBytes(file) }));
+}
+
+function decodeImportBytes(file: { name: string; base64?: string; bytes?: number[] }): Uint8Array {
+  if (typeof file.base64 === "string") {
+    const binary = atob(file.base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+  if (Array.isArray(file.bytes)) return new Uint8Array(file.bytes);
+  throw new Error(`Local NovelChat service returned ${file.name} without an import payload`);
 }
 
 export async function fetchLocalWebLibraryFolderStatus(

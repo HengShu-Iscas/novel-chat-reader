@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  assertImportFileWithinLimits,
+  defaultImportLimits,
+  type ImportLimits,
+} from "../src/domain/importLimits";
 import { getImportFileKind, isSupportedNovelImport } from "../src/domain/importSource";
 import { parseEpub, parseTxt } from "../src/domain/parsers";
 import type { NovelSource } from "../src/domain/types";
@@ -40,6 +45,7 @@ export async function scanLibraryFolder(
   folderPath: string,
   now = Date.now(),
   cache: LibraryFolderScanCache = {},
+  limits: ImportLimits = defaultImportLimits,
 ): Promise<LibraryFolderScanResult> {
   const root = path.resolve(folderPath);
   const entries = await readdir(root, { withFileTypes: true });
@@ -55,6 +61,7 @@ export async function scanLibraryFolder(
     const cacheKey = makeFolderBookId(filePath);
     try {
       const fileStat = await stat(filePath);
+      assertImportFileWithinLimits({ name: entry.name, size: fileStat.size }, limits);
       const cached = cache[cacheKey];
       if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
         books.push(cached.book);

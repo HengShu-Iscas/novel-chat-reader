@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,9 +9,11 @@ import { defaultSettings } from "../src/domain/readerState";
 
 let service: LocalWebService | null = null;
 let tempDir: string | null = null;
+const sessionCookies = new Map<string, string>();
 
 describe("local web service", () => {
   afterEach(async () => {
+    sessionCookies.clear();
     if (service) {
       await service.close();
       service = null;
@@ -48,9 +51,93 @@ describe("local web service", () => {
       files: [{ name: "from-open-with.txt", bytes: Array.from(new TextEncoder().encode("text")) }],
     });
     expect(await getJson(`${service.url}/api/imports/pending`)).toEqual({
-      files: [{ name: "from-open-with.txt", bytes: Array.from(new TextEncoder().encode("text")) }],
+      files: [{ name: "from-open-with.txt", base64: Buffer.from("text").toString("base64") }],
     });
     expect(await getJson(`${service.url}/api/imports/pending`)).toEqual({ files: [] });
+
+    await postJson(`${service.url}/api/imports`, {
+      files: [{ name: "base64.txt", base64: Buffer.from("next").toString("base64") }],
+    });
+    expect(await getJson(`${service.url}/api/imports/pending`)).toEqual({
+      files: [{ name: "base64.txt", base64: Buffer.from("next").toString("base64") }],
+    });
+  });
+
+  it("keeps discovery/settings public and protects private local APIs with cookie and Origin checks", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-service-"));
+    service = await startLocalWebService({
+      staticDir: tempDir,
+      userDataDir: tempDir,
+      preferredPort: 0,
+      openBrowser: false,
+    });
+
+    expect((await fetch(`${service.url}/health`)).status).toBe(200);
+    expect((await fetch(`${service.url}/api/settings`)).status).toBe(200);
+    expect((await fetch(`${service.url}/api/library`)).status).toBe(401);
+    expect(await requestStatus(`${service.url}/health`, { Host: `example.com:${service.port}` })).toBe(403);
+
+    const cookie = await getSessionCookie(`${service.url}/api/library`);
+    const forbidden = await fetch(`${service.url}/api/library`, {
+      headers: { Cookie: cookie, Origin: "https://example.com" },
+    });
+    expect(forbidden.status).toBe(403);
+
+    const allowed = await fetch(`${service.url}/api/library`, {
+      headers: { Cookie: cookie, Origin: service.url },
+    });
+    expect(allowed.status).toBe(200);
+  });
+
+  it("rejects oversized JSON bodies, files, file counts, and import batches with 413", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "novelchat-service-"));
+    service = await startLocalWebService({
+      staticDir: tempDir,
+      userDataDir: tempDir,
+      preferredPort: 0,
+      openBrowser: false,
+      limits: { maxJsonBodyBytes: 256, maxFileBytes: 4, maxFiles: 2, maxBatchBytes: 5 },
+    });
+
+    expect((await authenticatedFetch(`${service.url}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(300) }),
+    })).status).toBe(413);
+    expect(await requestChunkedStatus(
+      `${service.url}/api/settings`,
+      await getSessionCookie(`${service.url}/api/settings`),
+      JSON.stringify({ padding: "x".repeat(300) }),
+    )).toBe(413);
+
+    expect((await authenticatedFetch(`${service.url}/api/imports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files: [{ name: "large.txt", base64: Buffer.from("12345").toString("base64") }] }),
+    })).status).toBe(413);
+
+    expect((await authenticatedFetch(`${service.url}/api/imports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        files: [
+          { name: "one.txt", base64: Buffer.from("123").toString("base64") },
+          { name: "two.txt", base64: Buffer.from("456").toString("base64") },
+        ],
+      }),
+    })).status).toBe(413);
+
+    expect((await authenticatedFetch(`${service.url}/api/imports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        files: [
+          { name: "one.txt", base64: "MQ==" },
+          { name: "two.txt", base64: "Mg==" },
+          { name: "three.txt", base64: "Mw==" },
+        ],
+      }),
+    })).status).toBe(413);
   });
 
   it("normalizes older local state files that do not have display settings", async () => {
@@ -215,13 +302,13 @@ describe("local web static path guard", () => {
 });
 
 async function getJson(url: string) {
-  const response = await fetch(url);
+  const response = await authenticatedFetch(url);
   expect(response.ok).toBe(true);
   return response.json();
 }
 
 async function putJson(url: string, body: unknown) {
-  const response = await fetch(url, {
+  const response = await authenticatedFetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -231,11 +318,54 @@ async function putJson(url: string, body: unknown) {
 }
 
 async function postJson(url: string, body: unknown) {
-  const response = await fetch(url, {
+  const response = await authenticatedFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   expect(response.ok).toBe(true);
   return response.json();
+}
+
+async function authenticatedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", await getSessionCookie(url));
+  return fetch(url, { ...init, headers });
+}
+
+async function getSessionCookie(url: string): Promise<string> {
+  const origin = new URL(url).origin;
+  const cached = sessionCookies.get(origin);
+  if (cached) return cached;
+
+  const response = await fetch(`${origin}/`);
+  const cookie = response.headers.get("set-cookie")?.split(";", 1)[0];
+  expect(cookie).toMatch(/^novelchat_session=/);
+  sessionCookies.set(origin, cookie!);
+  return cookie!;
+}
+
+async function requestStatus(url: string, headers: http.OutgoingHttpHeaders): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { headers }, (response) => {
+      response.resume();
+      response.once("end", () => resolve(response.statusCode ?? 0));
+    });
+    request.once("error", reject);
+  });
+}
+
+async function requestChunkedStatus(url: string, cookie: string, body: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, {
+      method: "PUT",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+    }, (response) => {
+      response.resume();
+      response.once("end", () => resolve(response.statusCode ?? 0));
+    });
+    request.once("error", reject);
+    request.write(body.slice(0, 200));
+    request.end(body.slice(200));
+  });
 }

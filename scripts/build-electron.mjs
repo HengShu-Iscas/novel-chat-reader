@@ -4,6 +4,7 @@ import { build } from "esbuild";
 
 const root = process.cwd();
 const outDir = path.join(root, "dist-electron");
+const sourcemap = process.env.NOVELCHAT_ELECTRON_SOURCEMAP === "1";
 
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
@@ -14,7 +15,7 @@ const common = {
   format: "cjs",
   logLevel: "info",
   platform: "node",
-  sourcemap: true,
+  sourcemap,
   target: "node22",
 };
 
